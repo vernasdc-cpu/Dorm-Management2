@@ -1,0 +1,5 @@
+.env
+uploads/contracts/*
+uploads/repairs/*
+uploads/profiles/*
+!uploads/.htaccess

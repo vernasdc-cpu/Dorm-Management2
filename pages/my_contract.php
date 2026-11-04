@@ -1,0 +1,49 @@
+<?php
+if (($user['role'] ?? '') !== 'resident') {
+    http_response_code(403);
+    echo '<div class="card"><h3>Forbidden</h3><p>Residents only.</p></div>';
+    return;
+}
+$pdo = db();
+$ctx = get_tenant_context($user);
+$contracts = [];
+
+try {
+    // Try via resident
+    if ($ctx['resident']) {
+        $st = $pdo->prepare('SELECT c.*, cd.id as doc_id, cd.file_name FROM contracts c LEFT JOIN contract_documents cd ON cd.contract_id = c.id WHERE c.resident_id = ? ORDER BY c.id DESC');
+        $st->execute([(int)$ctx['resident']['residents_id']]);
+        $contracts = $st->fetchAll();
+    }
+    // Try via tenant profile
+    if (!$contracts && $ctx['tenant_profile']) {
+        $st = $pdo->prepare('SELECT c.*, cd.id as doc_id, cd.file_name FROM contracts c LEFT JOIN contract_documents cd ON cd.contract_id = c.id WHERE c.tenant_profile_id = ? ORDER BY c.id DESC');
+        $st->execute([(int)$ctx['tenant_profile']['id']]);
+        $contracts = $st->fetchAll();
+    }
+} catch (Throwable $t) {
+    $contracts = [];
+}
+?>
+<div class="card">
+  <h3>My Contracts</h3>
+  <div style="overflow-x:auto">
+  <table class="tbl">
+    <thead><tr><th>Contract No.</th><th>Room</th><th>Start</th><th>End</th><th>Rate</th><th>Status</th><th>Document</th></tr></thead>
+    <tbody>
+    <?php if (!$contracts): ?><tr><td colspan="7">No contracts found.</td></tr><?php endif; ?>
+    <?php foreach ($contracts as $c): ?>
+      <tr>
+        <td><?=e($c['contract_number'])?></td>
+        <td><?=e((string)($c['room_id'] ?? ''))?></td>
+        <td><?=e($c['start_date'])?></td>
+        <td><?=e($c['end_date'])?></td>
+        <td><?=money($c['monthly_rate'])?></td>
+        <td><?=e($c['status'])?></td>
+        <td><?php if($c['doc_id']): ?><a class="btn ghost sm" href="index.php?page=download&type=contract&id=<?=(int)$c['doc_id']?>">Download</a><?php else: ?>—<?php endif; ?></td>
+      </tr>
+    <?php endforeach; ?>
+    </tbody>
+  </table>
+  </div>
+</div>
