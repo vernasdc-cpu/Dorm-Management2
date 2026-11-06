@@ -21,17 +21,6 @@ try {
         $ok = false;
         if ((int)$p['owner_uid'] === (int)$user['id']) $ok = true;
         if (!$ok) {
-            try {
-                $ctx = get_tenant_context($user);
-                if ($ctx['resident'] && (int)$ctx['resident']['residents_id'] === (int)$p['residents_id']) $ok = true;
-                if ($ctx['tenant_profile']) {
-                    $chk = db()->prepare('SELECT COUNT(*) FROM payments p2 JOIN bills b2 ON b2.id = p2.bill_id JOIN residents r2 ON r2.residents_id = b2.resident_id JOIN users u2 ON u2.id = r2.user_id WHERE p2.id = ? AND (LOWER(u2.email)=LOWER(?) OR LOWER(u2.name)=LOWER(?))');
-                    $chk->execute([$id, $ctx['tenant_profile']['email'] ?? ($user['email'] ?? ''), $ctx['tenant_profile']['full_name'] ?? ($user['name'] ?? '')]);
-                    if ((int)$chk->fetchColumn() > 0) $ok = true;
-                }
-            } catch (Throwable $t) {}
-        }
-        if (!$ok) {
             http_response_code(403); echo '<div class="card"><h3>Forbidden</h3><p>You may only view your own receipts.</p></div>'; return;
         }
     }

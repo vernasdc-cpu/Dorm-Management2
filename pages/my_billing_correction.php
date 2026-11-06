@@ -19,11 +19,9 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             $chk->execute([$billId, (int)$ctx['resident']['residents_id']]);
             if ((int)$chk->fetchColumn() > 0) $ok = true;
         }
-        if (!$ok && $ctx['tenant_profile']) {
-            $chk = $pdo->prepare('SELECT COUNT(*) FROM bills b JOIN residents r ON r.residents_id = b.resident_id JOIN users u ON u.id = r.user_id WHERE b.id = ? AND (LOWER(u.email)=LOWER(?) OR LOWER(u.name)=LOWER(?))');
-            $chk->execute([$billId, $ctx['tenant_profile']['email'] ?? ($user['email'] ?? ''), $ctx['tenant_profile']['full_name'] ?? ($user['name'] ?? '')]);
-            if ((int)$chk->fetchColumn() > 0) $ok = true;
-        }
+        $chk = $pdo->prepare('SELECT COUNT(*) FROM bills b JOIN tenant_applications ta ON ta.id = b.application_id WHERE b.id = ? AND (b.resident_id IS NULL OR b.resident_id = 0) AND ta.user_id = ?');
+        $chk->execute([$billId, (int)$user['id']]);
+        if ((int)$chk->fetchColumn() > 0) $ok = true;
         if (!$ok) throw new RuntimeException('You may only request corrections for your own bills.');
         
         $field = trim((string)($_POST['disputed_field'] ?? ''));
@@ -56,10 +54,12 @@ try {
         $st->execute([(int)$ctx['resident']['residents_id']]);
         $bills = $st->fetchAll();
     }
-    if (!$bills && $ctx['tenant_profile']) {
-        $st = $pdo->prepare('SELECT b.* FROM bills b JOIN residents r ON r.residents_id = b.resident_id JOIN users u ON u.id = r.user_id WHERE LOWER(u.email)=LOWER(?) OR LOWER(u.name)=LOWER(?) ORDER BY b.billing_period DESC');
-        $st->execute([$ctx['tenant_profile']['email'] ?? ($user['email'] ?? ''), $ctx['tenant_profile']['full_name'] ?? ($user['name'] ?? '')]);
-        $bills = $st->fetchAll();
+    $st = $pdo->prepare('SELECT b.* FROM bills b JOIN tenant_applications ta ON ta.id = b.application_id WHERE (b.resident_id IS NULL OR b.resident_id = 0) AND ta.user_id = ? ORDER BY b.billing_period DESC');
+    $st->execute([(int)$user['id']]);
+    $appBills = $st->fetchAll();
+    $knownBillIds = array_fill_keys(array_map('intval', array_column($bills, 'id')), true);
+    foreach ($appBills as $bill) {
+        if (!isset($knownBillIds[(int)$bill['id']])) $bills[] = $bill;
     }
     $rst = $pdo->prepare('SELECT bc.*, b.invoice_number, b.billing_period FROM billing_corrections bc JOIN bills b ON b.id = bc.bill_id WHERE bc.tenant_user_id = ? ORDER BY bc.id DESC');
     $rst->execute([(int)$user['id']]);

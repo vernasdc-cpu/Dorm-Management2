@@ -40,6 +40,18 @@ function audit_log(?int $userId, string $action, string $module, ?string $record
     } catch (Throwable $t) { /* never break app on audit failure */ }
 }
 
+function purge_expired_tenant_notifications(PDO $pdo, int $recipientId): void {
+    $st = $pdo->prepare(
+        'DELETE FROM notifications
+         WHERE recipient_id = ?
+           AND (
+             (is_read = 1 AND COALESCE(read_at, created_at) <= DATE_SUB(NOW(), INTERVAL 3 DAY))
+             OR (is_read = 0 AND created_at <= DATE_SUB(NOW(), INTERVAL 7 DAY))
+           )'
+    );
+    $st->execute([$recipientId]);
+}
+
 // Contract auto-status: Active -> Expiring Soon (<=30d) -> Expired
 function contract_computed_status(array $c): string {
     if (in_array($c['status'], ['Draft','Pending','Terminated'], true)) return $c['status'];
@@ -82,6 +94,99 @@ function safe_store_upload(array $file, string $destDir): string {
     return $name;
 }
 
+function tenant_account_default_password(string $name): string {
+    return (preg_replace('/\s+/', '', trim($name)) ?? '') . '@123';
+}
+
+function tenant_provision_account(PDO $pdo, array $profile): array {
+    $profileId = (int)($profile['id'] ?? 0);
+    $name = trim((string)($profile['full_name'] ?? ''));
+    $email = trim((string)($profile['email'] ?? ''));
+    if ($profileId <= 0 || $name === '' || !filter_var($email, FILTER_VALIDATE_EMAIL)) {
+        throw new RuntimeException('A valid tenant name and email are required to create an account.');
+    }
+
+    $st = $pdo->prepare('SELECT id, email, role, status, deleted_at, tenant_profile_id FROM users
+        WHERE tenant_profile_id=? OR LOWER(email)=LOWER(?)
+        ORDER BY (tenant_profile_id=?) DESC
+        LIMIT 1 FOR UPDATE');
+    $st->execute([$profileId, $email, $profileId]);
+    $existing = $st->fetch();
+    if ($existing) {
+        if ($existing['deleted_at'] !== null) {
+            throw new RuntimeException('This email belongs to a deleted account. Use a different email address or restore the account first.');
+        }
+        if ($existing['role'] !== 'resident') {
+            throw new RuntimeException('This email is already used by a non-tenant account.');
+        }
+        if (!empty($existing['tenant_profile_id']) && (int)$existing['tenant_profile_id'] !== $profileId) {
+            throw new RuntimeException('This email is already linked to another tenant profile.');
+        }
+        if (empty($existing['tenant_profile_id'])) {
+            $pdo->prepare('UPDATE users SET tenant_profile_id=? WHERE id=?')->execute([$profileId, (int)$existing['id']]);
+        }
+        $userId = (int)$existing['id'];
+        $accountStatus = $existing['status'];
+    } else {
+        $password = tenant_account_default_password($name);
+        $accountStatus = ($profile['profile_status'] ?? 'Active') === 'Active' ? 'active' : 'inactive';
+        $ins = $pdo->prepare('INSERT INTO users (name, email, password_hash, role, phone, status, tenant_profile_id) VALUES (?,?,?,?,?,?,?)');
+        $ins->execute([
+            $name,
+            $email,
+            password_hash($password, PASSWORD_DEFAULT),
+            'resident',
+            trim((string)($profile['phone'] ?? '')) ?: null,
+            $accountStatus,
+            $profileId,
+        ]);
+        $userId = (int)$pdo->lastInsertId();
+    }
+
+    $resident = $pdo->prepare('SELECT residents_id FROM residents WHERE user_id=? LIMIT 1 FOR UPDATE');
+    $resident->execute([$userId]);
+    if (!$resident->fetchColumn()) {
+        $pdo->prepare('INSERT INTO residents (user_id, room_id, status) VALUES (?,?,?)')
+            ->execute([
+                $userId,
+                (int)($profile['room_id'] ?? 0) ?: null,
+                ($profile['profile_status'] ?? 'Active') === 'Active' ? 'active' : 'inactive',
+            ]);
+    }
+
+    if ($existing) {
+        return [
+            'created' => false,
+            'user_id' => (int)$existing['id'],
+            'email' => $existing['email'],
+            'status' => $existing['status'],
+            'password' => null,
+        ];
+    }
+    return ['created' => true, 'user_id' => $userId, 'email' => $email, 'status' => $accountStatus, 'password' => $password];
+}
+
+function tenant_send_account_email(array $profile, ?string $password, ?string &$error = null): bool {
+    $name = trim((string)($profile['full_name'] ?? 'Tenant'));
+    $email = trim((string)($profile['email'] ?? ''));
+    $body = "Dear {$name},\r\n\r\nThank you for choosing Heart Ladies Dormitory.\r\n\r\n";
+    $body .= "Your tenant portal account is ready.\r\n";
+    $body .= "User account: {$email}\r\n";
+    if ($password !== null) {
+        $body .= "Password: {$password}\r\n";
+    } else {
+        $body .= "Use your existing password to log in. If you have forgotten it, please contact the dormitory administrator.\r\n";
+    }
+    if (($profile['profile_status'] ?? 'Active') !== 'Active') {
+        $body .= "\r\nYour account is inactive until your tenant profile is activated. Please contact the dormitory administrator.\r\n";
+    } elseif (($profile['account_status'] ?? 'active') !== 'active') {
+        $body .= "\r\nYour account is currently inactive. Please contact the dormitory administrator for assistance.\r\n";
+    }
+    $body .= "\r\nYou can change your password after logging in from My Profile.\r\n\r\nThank you,\r\nHeart Ladies Dormitory";
+
+    return send_app_mail($email, 'Welcome to Heart Ladies Dormitory', $body, $error);
+}
+
 function money(float|int|string $n): string { return '₱' . number_format((float)$n, 2); }
 
 // Tenant context helpers
@@ -99,11 +204,18 @@ function get_tenant_context(array $user): ?array {
                 try { $pdo->prepare('UPDATE users SET resident_link_id = ? WHERE id = ?')->execute([(int)$ctx['resident']['residents_id'], (int)$user['id']]); } catch (Throwable $t) {}
             }
         }
-        // Try tenant_profiles
-        $st2 = $pdo->prepare('SELECT * FROM tenant_profiles WHERE id = ? OR email = ? OR LOWER(full_name)=LOWER(?) ORDER BY id DESC LIMIT 1');
+        // Resolve tenant profiles by explicit link, or by a unique email match.
         $tpId = $user['tenant_profile_id'] ?? null;
-        $st2->execute([$tpId ?: 0, $user['email'] ?? '', $user['name'] ?? '']);
-        $ctx['tenant_profile'] = $st2->fetch() ?: null;
+        if ($tpId) {
+            $st2 = $pdo->prepare('SELECT * FROM tenant_profiles WHERE id = ? LIMIT 1');
+            $st2->execute([(int)$tpId]);
+            $ctx['tenant_profile'] = $st2->fetch() ?: null;
+        } elseif (!empty($user['email'])) {
+            $st2 = $pdo->prepare('SELECT * FROM tenant_profiles WHERE LOWER(email)=LOWER(?) LIMIT 2');
+            $st2->execute([$user['email']]);
+            $matches = $st2->fetchAll();
+            $ctx['tenant_profile'] = count($matches) === 1 ? $matches[0] : null;
+        }
         if ($ctx['tenant_profile'] && empty($user['tenant_profile_id'])) {
             try { $pdo->prepare('UPDATE users SET tenant_profile_id = ? WHERE id = ?')->execute([(int)$ctx['tenant_profile']['id'], (int)$user['id']]); } catch (Throwable $t) {}
         }
@@ -122,13 +234,9 @@ function is_tenant_owner_of_bill(array $user, int $billId): bool {
             $st->execute([$billId, (int)$ctx['resident']['residents_id']]);
             if ((int)$st->fetchColumn() > 0) return true;
         }
-        // Check via tenant profile
-        if ($ctx['tenant_profile']) {
-            // Try to find bills linked somehow
-            $st = $pdo->prepare('SELECT COUNT(*) FROM bills b JOIN residents r ON r.residents_id = b.resident_id JOIN users u ON u.id = r.user_id WHERE b.id = ? AND (LOWER(u.email)=LOWER(?) OR LOWER(u.name)=LOWER(?))');
-            $st->execute([$billId, $ctx['tenant_profile']['email'] ?? ($user['email'] ?? ''), $ctx['tenant_profile']['full_name'] ?? ($user['name'] ?? '')]);
-            if ((int)$st->fetchColumn() > 0) return true;
-        }
+        $st = $pdo->prepare('SELECT COUNT(*) FROM bills b JOIN tenant_applications ta ON ta.id = b.application_id WHERE b.id = ? AND (b.resident_id IS NULL OR b.resident_id = 0) AND ta.user_id = ?');
+        $st->execute([$billId, (int)$user['id']]);
+        if ((int)$st->fetchColumn() > 0) return true;
     } catch (Throwable $t) {}
     return false;
 }

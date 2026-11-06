@@ -55,11 +55,11 @@ try {
 
     if ($action === 'read') {
       $id = (int)($_POST['id'] ?? 0);
-      db()->prepare('UPDATE notifications SET is_read=1 WHERE id=? AND recipient_id=?')->execute([$id, (int)$user['id']]);
+      db()->prepare('UPDATE notifications SET is_read=1, read_at=COALESCE(read_at,NOW()) WHERE id=? AND recipient_id=?')->execute([$id, (int)$user['id']]);
       redirect('index.php?page=notifications&tab=' . urlencode($tab));
     }
     if ($action === 'read_all') {
-      db()->prepare('UPDATE notifications SET is_read=1 WHERE recipient_id=? AND is_read=0')->execute([(int)$user['id']]);
+      db()->prepare('UPDATE notifications SET is_read=1, read_at=NOW() WHERE recipient_id=? AND is_read=0')->execute([(int)$user['id']]);
       flash('success', 'All notifications marked as read.');
       redirect('index.php?page=notifications&tab=' . urlencode($tab));
     }

@@ -523,6 +523,21 @@ try {
     )->fetchAll();
 } catch (Throwable $t) {}
 
+$approvedSubmissions = [];
+$approvedSubmissionsError = null;
+try {
+    $approvedSubmissions = db()->query(
+        "SELECT id, full_name, email, unit_number, total_price, payment_type, amount_paid,
+                date_of_payment, screenshot_path, reviewed_at, review_note
+         FROM tenant_billing_payments
+         WHERE status='Approved'
+         ORDER BY reviewed_at DESC, id DESC
+         LIMIT 100"
+    )->fetchAll();
+} catch (Throwable $t) {
+    $approvedSubmissionsError = 'Could not load approved payment submissions: ' . $t->getMessage();
+}
+
 $expQuery = http_build_query(array_filter(['page' => 'billing', 'export' => 'csv', 'f_period' => $fPeriod, 'f_status' => $fStatus, 'q' => $fSearch]));
 ?>
 
@@ -881,6 +896,43 @@ $expQuery = http_build_query(array_filter(['page' => 'billing', 'export' => 'csv
     </tbody>
   </table>
   </div>
+</div>
+
+<div class="card">
+  <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
+    <h3 style="margin:0">Approved Billing Payment Submissions</h3>
+    <a class="btn ghost sm" href="index.php?page=billing_payments">Manage submissions</a>
+  </div>
+  <p style="color:#7c6f8a">Tenant payment proofs approved by an administrator. These are submissions, not receipts recorded against a bill.</p>
+  <?php if ($approvedSubmissionsError): ?>
+    <div class="alert error"><?=e($approvedSubmissionsError)?></div>
+  <?php else: ?>
+    <div class="tbl-wrap">
+    <table class="tbl">
+      <thead><tr><th>Ref</th><th>Tenant</th><th>Unit</th><th>Submitted total</th><th>Payment type</th><th>Amount paid</th><th>Payment date</th><th>Approved</th><th class="no-print">Proof</th></tr></thead>
+      <tbody>
+      <?php if (!$approvedSubmissions): ?><tr><td colspan="9">No approved payment submissions.</td></tr><?php endif; ?>
+      <?php foreach ($approvedSubmissions as $submission): ?>
+        <tr>
+          <td>#<?=e((string)$submission['id'])?></td>
+          <td><strong><?=e($submission['full_name'])?></strong><br><small><?=e($submission['email'] ?? '')?></small></td>
+          <td><?=e($submission['unit_number'] ?? '—')?></td>
+          <td><?=money($submission['total_price'])?></td>
+          <td><?=e($submission['payment_type'])?></td>
+          <td><?=money($submission['amount_paid'])?></td>
+          <td><?=e(substr((string)$submission['date_of_payment'], 0, 10))?></td>
+          <td><?=e($submission['reviewed_at'] ? substr((string)$submission['reviewed_at'], 0, 16) : '—')?></td>
+          <td class="no-print">
+            <?php if (!empty($submission['screenshot_path'])): ?>
+              <a class="btn ghost sm" href="index.php?page=download&amp;type=billing_proof&amp;pid=<?=(int)$submission['id']?>" target="_blank">View proof</a>
+            <?php else: ?>—<?php endif; ?>
+          </td>
+        </tr>
+      <?php endforeach; ?>
+      </tbody>
+    </table>
+    </div>
+  <?php endif; ?>
 </div>
 
 <script>

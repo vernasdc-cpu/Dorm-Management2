@@ -11,18 +11,31 @@ $contracts = [];
 try {
     // Try via resident
     if ($ctx['resident']) {
-        $st = $pdo->prepare('SELECT c.*, cd.id as doc_id, cd.file_name FROM contracts c LEFT JOIN contract_documents cd ON cd.contract_id = c.id WHERE c.resident_id = ? ORDER BY c.id DESC');
+        $st = $pdo->prepare('SELECT c.* FROM contracts c WHERE c.resident_id = ? ORDER BY c.id DESC');
         $st->execute([(int)$ctx['resident']['residents_id']]);
         $contracts = $st->fetchAll();
     }
     // Try via tenant profile
     if (!$contracts && $ctx['tenant_profile']) {
-        $st = $pdo->prepare('SELECT c.*, cd.id as doc_id, cd.file_name FROM contracts c LEFT JOIN contract_documents cd ON cd.contract_id = c.id WHERE c.tenant_profile_id = ? ORDER BY c.id DESC');
+        $st = $pdo->prepare('SELECT c.* FROM contracts c WHERE c.tenant_profile_id = ? ORDER BY c.id DESC');
         $st->execute([(int)$ctx['tenant_profile']['id']]);
         $contracts = $st->fetchAll();
     }
+    if ($contracts) {
+        $contractIds = array_map(static fn(array $contract): int => (int)$contract['id'], $contracts);
+        $placeholders = implode(',', array_fill(0, count($contractIds), '?'));
+        $docSt = $pdo->prepare("SELECT id, contract_id, file_name FROM contract_documents WHERE contract_id IN ($placeholders) ORDER BY id");
+        $docSt->execute($contractIds);
+        $documentsByContract = [];
+        foreach ($docSt->fetchAll() as $doc) {
+            $documentsByContract[(int)$doc['contract_id']][] = $doc;
+        }
+    } else {
+        $documentsByContract = [];
+    }
 } catch (Throwable $t) {
     $contracts = [];
+    $documentsByContract = [];
 }
 ?>
 <div class="card">
@@ -40,7 +53,14 @@ try {
         <td><?=e($c['end_date'])?></td>
         <td><?=money($c['monthly_rate'])?></td>
         <td><?=e($c['status'])?></td>
-        <td><?php if($c['doc_id']): ?><a class="btn ghost sm" href="index.php?page=download&type=contract&id=<?=(int)$c['doc_id']?>">Download</a><?php else: ?>—<?php endif; ?></td>
+        <td>
+          <?php $contractDocs = $documentsByContract[(int)$c['id']] ?? []; ?>
+          <?php if ($contractDocs): ?>
+            <?php foreach ($contractDocs as $doc): ?>
+              <a class="btn ghost sm" href="index.php?page=download&amp;type=contract&amp;id=<?=(int)$doc['id']?>"><?=e($doc['file_name'])?></a>
+            <?php endforeach; ?>
+          <?php else: ?>—<?php endif; ?>
+        </td>
       </tr>
     <?php endforeach; ?>
     </tbody>

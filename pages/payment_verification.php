@@ -23,13 +23,6 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             $pdo->prepare("UPDATE tenant_billing_payments SET status='Approved', reviewed_by=?, reviewed_at=NOW(), review_note=? WHERE id=?")
                 ->execute([(int)$user['id'], $note ?: null, $id]);
 
-            // Try to update tenant profile payment status if linked
-            if (!empty($sub['tenant_profile_id'])) {
-                try {
-                    $pstatus = ($sub['payment_type'] === 'Partial payment') ? 'Partial' : 'Paid';
-                    $pdo->prepare('UPDATE tenant_profiles SET payment_status=? WHERE id=?')->execute([$pstatus, (int)$sub['tenant_profile_id']]);
-                } catch (Throwable $t) {}
-            }
             // Try to update linked users
             if (!empty($sub['user_id'])) {
                 try {

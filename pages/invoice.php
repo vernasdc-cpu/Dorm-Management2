@@ -10,7 +10,7 @@ try {
                 COALESCE(u.phone, ta.phone, '') AS resident_phone,
                 COALESCE(rm.room_number, ta.intended_unit_number, '—') AS room_number,
                 COALESCE(rm.monthly_rate, 0) AS monthly_rate,
-                r.user_id AS owner_uid, r.residents_id
+                r.user_id AS owner_uid, r.residents_id, b.resident_id AS bill_resident_id, ta.user_id AS application_owner_uid
          FROM bills b
          LEFT JOIN residents r ON r.residents_id = b.resident_id
          LEFT JOIN users u ON u.id = r.user_id
@@ -23,17 +23,12 @@ try {
     if (!$b) { http_response_code(404); echo '<div class="card"><p>Invoice not found.</p></div>'; return; }
     if (($user['role'] ?? '') === 'resident') {
         $ok = false;
-        if ((int)$b['owner_uid'] === (int)$user['id']) $ok = true;
+        if ((int)$b['owner_uid'] === (int)$user['id'] || ((int)$b['bill_resident_id'] <= 0 && (int)$b['application_owner_uid'] === (int)$user['id'])) $ok = true;
         // Also check linked context
         if (!$ok) {
             try {
                 $ctx = get_tenant_context($user);
                 if ($ctx['resident'] && (int)$ctx['resident']['residents_id'] === (int)$b['residents_id']) $ok = true;
-                if ($ctx['tenant_profile']) {
-                    $chk = db()->prepare('SELECT COUNT(*) FROM bills b2 JOIN residents r2 ON r2.residents_id = b2.resident_id JOIN users u2 ON u2.id = r2.user_id WHERE b2.id = ? AND (LOWER(u2.email)=LOWER(?) OR LOWER(u2.name)=LOWER(?))');
-                    $chk->execute([$id, $ctx['tenant_profile']['email'] ?? ($user['email'] ?? ''), $ctx['tenant_profile']['full_name'] ?? ($user['name'] ?? '')]);
-                    if ((int)$chk->fetchColumn() > 0) $ok = true;
-                }
             } catch (Throwable $t) {}
         }
         if (!$ok) {

@@ -256,6 +256,7 @@ CREATE TABLE IF NOT EXISTS notifications (
   recipient_role VARCHAR(30) NULL,
   priority ENUM('Normal','Important','Urgent') NOT NULL DEFAULT 'Normal',
   is_read TINYINT(1) NOT NULL DEFAULT 0,
+  read_at TIMESTAMP NULL DEFAULT NULL,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (sender_id) REFERENCES users(id) ON DELETE SET NULL,
   FOREIGN KEY (recipient_id) REFERENCES users(id) ON DELETE CASCADE,
@@ -295,7 +296,6 @@ CREATE TABLE IF NOT EXISTS tenant_profiles (
   bed_id INT NULL,
   photo_path VARCHAR(255) NULL,
   profile_status ENUM('Active','Inactive') NOT NULL DEFAULT 'Active',
-  payment_status ENUM('Paid','Partial','Unpaid') NOT NULL DEFAULT 'Unpaid',
   created_by INT NULL,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -305,7 +305,6 @@ CREATE TABLE IF NOT EXISTS tenant_profiles (
   UNIQUE KEY uq_tenant_bed (bed_id),
   INDEX idx_tenant_type (tenant_type),
   INDEX idx_tenant_status (profile_status),
-  INDEX idx_tenant_payment (payment_status),
   INDEX idx_tenant_name (full_name),
   INDEX idx_tenant_floor (floor_level),
   INDEX idx_tenant_room (room_id)

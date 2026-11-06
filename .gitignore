@@ -1,5 +1,14 @@
+# Environment and secrets
 .env
+.env.*
+
+# Private tenant documents
 uploads/contracts/*
 uploads/repairs/*
 uploads/profiles/*
+uploads/billing/*
+uploads/reports/*
+uploads/mail.log
+
+# Preserve upload protection file
 !uploads/.htaccess

@@ -7,7 +7,6 @@ $err = null;
 
 $TENANT_TYPES = ['Tenant/Resident', 'Tenant/Commercial'];
 $PROFILE_STATUSES = ['Active', 'Inactive'];
-$PAYMENT_STATUSES = ['Paid', 'Partial', 'Unpaid'];
 $FLOORS = ['G', '2nd', '3rd', '4th', '5th', '6th'];
 
 function tenant_floor_from_unit(string $unit): string {
@@ -17,14 +16,6 @@ function tenant_floor_from_unit(string $unit): string {
 }
 function tenant_profile_status_class(string $s): string {
     return $s === 'Active' ? 'ok' : 'bad';
-}
-function tenant_payment_status_class(string $s): string {
-    return match ($s) {
-        'Paid' => 'ok',
-        'Partial' => 'warn',
-        'Unpaid' => 'bad',
-        default => '',
-    };
 }
 function tenant_photo_url(array $row): string {
     return 'index.php?page=download&type=tenant_photo&id=' . (int)$row['id'];
@@ -56,15 +47,13 @@ $clean = static function (array $src): array {
         'floor_level' => trim((string)($src['floor_level'] ?? '')),
         'unit_number' => trim((string)($src['unit_number'] ?? '')),
         'profile_status' => (string)($src['profile_status'] ?? ''),
-        'payment_status' => (string)($src['payment_status'] ?? ''),
     ];
 };
-$validate = static function (array $d) use ($TENANT_TYPES, $PROFILE_STATUSES, $PAYMENT_STATUSES, $FLOORS): array {
+$validate = static function (array $d) use ($TENANT_TYPES, $PROFILE_STATUSES, $FLOORS): array {
     if ($d['full_name'] === '') throw new RuntimeException('Complete name is required.');
     if ($d['email'] !== '' && !filter_var($d['email'], FILTER_VALIDATE_EMAIL)) throw new RuntimeException('Invalid email address.');
     if (!in_array($d['tenant_type'], $TENANT_TYPES, true)) throw new RuntimeException('Please choose a valid role.');
     if (!in_array($d['profile_status'], $PROFILE_STATUSES, true)) throw new RuntimeException('Please choose a valid tenant status.');
-    if (!in_array($d['payment_status'], $PAYMENT_STATUSES, true)) throw new RuntimeException('Please choose a valid payment status.');
     if (!in_array($d['floor_level'], $FLOORS, true)) throw new RuntimeException('Please choose a floor.');
     if ($d['unit_number'] === '') throw new RuntimeException('Please choose a unit number.');
     $derivedFloor = tenant_floor_from_unit($d['unit_number']);
@@ -110,15 +99,15 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             if (!$roomId) throw new RuntimeException('Unit number was not found in Rooms.');
             $photo = tenant_store_photo($_FILES['photo'] ?? null);
             $newPhoto = $photo !== null;
-            $id = 0; $bedNo = '—'; $contractSynced = false;
+            $id = 0; $bedNo = '—'; $contractSynced = false; $account = null;
             try {
                 $pdo->beginTransaction();
-                $st = $pdo->prepare('INSERT INTO tenant_profiles (tenant_type, full_name, email, phone, contract_start, contract_end, unit_number, floor_level, room_id, photo_path, profile_status, payment_status, created_by) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)');
+                $st = $pdo->prepare('INSERT INTO tenant_profiles (tenant_type, full_name, email, phone, contract_start, contract_end, unit_number, floor_level, room_id, photo_path, profile_status, created_by) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)');
                 $st->execute([
                     $d['tenant_type'], $d['full_name'], $d['email'] ?: null, $d['phone'] ?: null,
                     $d['contract_start'] ?: null, $d['contract_end'] ?: null,
                     $d['unit_number'], $d['floor_level'], $roomId, $photo,
-                    $d['profile_status'], $d['payment_status'], (int)$user['id'],
+                    $d['profile_status'], (int)$user['id'],
                 ]);
                 $id = (int)$pdo->lastInsertId();
                 $bedId = assign_tenant_bed($pdo, $roomId);
@@ -127,6 +116,16 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                 $bedSt->execute([$bedId]);
                 $bedNo = (string)$bedSt->fetchColumn();
                 $contractSynced = sync_tenant_contract($pdo, $id, $roomId, $d['contract_start'], $d['contract_end'], (int)$user['id']);
+                if ($d['email'] !== '') {
+                    $account = tenant_provision_account($pdo, [
+                        'id' => $id,
+                        'full_name' => $d['full_name'],
+                        'email' => $d['email'],
+                        'phone' => $d['phone'],
+                        'profile_status' => $d['profile_status'],
+                        'room_id' => $roomId,
+                    ]);
+                }
                 $pdo->commit();
             } catch (Throwable $t) {
                 if ($pdo->inTransaction()) $pdo->rollBack();
@@ -137,6 +136,22 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             audit_log((int)$user['id'], 'Created tenant profile ' . $d['full_name'] . ' (unit ' . $d['unit_number'] . ', bed ' . $bedNo . ')', 'tenants', (string)$id);
             $msg = 'Tenant profile created and added to Room ' . $d['unit_number'] . ' (bed ' . $bedNo . ').';
             $msg .= $contractSynced ? ' Contract added to Contract Monitoring.' : ' Add both contract dates to create its contract.';
+            if ($account) {
+                $msg .= $account['created'] ? ' Tenant portal account created.' : ' Existing tenant portal account linked.';
+                $mailError = null;
+                if (tenant_send_account_email([
+                    'full_name' => $d['full_name'],
+                    'email' => $d['email'],
+                    'profile_status' => $d['profile_status'],
+                    'account_status' => $account['status'],
+                ], $account['password'], $mailError)) {
+                    $msg .= ' Welcome email sent.';
+                } else {
+                    flash('error', 'Tenant profile and account were created, but the welcome email could not be sent: ' . ($mailError ?: 'Unknown mail error.'));
+                }
+            } elseif ($d['email'] === '') {
+                $msg .= ' Add an email address to create a tenant portal account.';
+            }
             flash('success', $msg);
             redirect('index.php?page=tenants');
         }
@@ -148,30 +163,6 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             $existing = $cur->fetch();
             if (!$existing) throw new RuntimeException('Tenant profile not found.');
             $d = $validate($clean($_POST));
-            // Enforce: cannot set Paid/Partial if no billing record exists
-            if (in_array($d['payment_status'], ['Paid', 'Partial'], true)) {
-                $hasBilling = false;
-                try {
-                    // Check tenant_billing_payments
-                    $q1 = $pdo->prepare('SELECT COUNT(*) FROM tenant_billing_payments WHERE tenant_profile_id = ?');
-                    $q1->execute([$id]);
-                    if ((int)$q1->fetchColumn() > 0) $hasBilling = true;
-                    // Check by email/name/unit
-                    if (!$hasBilling && !empty($d['email'])) {
-                        $q2 = $pdo->prepare('SELECT COUNT(*) FROM tenant_billing_payments WHERE LOWER(email)=LOWER(?)');
-                        $q2->execute([$d['email']]);
-                        if ((int)$q2->fetchColumn() > 0) $hasBilling = true;
-                    }
-                    if (!$hasBilling) {
-                        $q3 = $pdo->prepare('SELECT COUNT(*) FROM bills b JOIN residents r ON r.residents_id = b.resident_id JOIN users u ON u.id = r.user_id WHERE LOWER(u.name)=LOWER(?) OR LOWER(u.email)=LOWER(?)');
-                        $q3->execute([$d['full_name'], $d['email'] ?: '']);
-                        if ((int)$q3->fetchColumn() > 0) $hasBilling = true;
-                    }
-                } catch (Throwable $t) {}
-                if (!$hasBilling) {
-                    throw new RuntimeException('Cannot set status to Paid/Partial because there is no billing record for this tenant.');
-                }
-            }
             $chk = $pdo->prepare('SELECT id FROM rooms WHERE room_number=?');
             $chk->execute([$d['unit_number']]);
             $roomId = (int)$chk->fetchColumn();
@@ -187,12 +178,12 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             try {
                 $pdo->beginTransaction();
                 $newBedId = assign_tenant_bed($pdo, $roomId, $keepBedId);
-                $st = $pdo->prepare('UPDATE tenant_profiles SET tenant_type=?, full_name=?, email=?, phone=?, contract_start=?, contract_end=?, unit_number=?, floor_level=?, room_id=?, bed_id=?, photo_path=?, profile_status=?, payment_status=? WHERE id=?');
+                $st = $pdo->prepare('UPDATE tenant_profiles SET tenant_type=?, full_name=?, email=?, phone=?, contract_start=?, contract_end=?, unit_number=?, floor_level=?, room_id=?, bed_id=?, photo_path=?, profile_status=? WHERE id=?');
                 $st->execute([
                     $d['tenant_type'], $d['full_name'], $d['email'] ?: null, $d['phone'] ?: null,
                     $d['contract_start'] ?: null, $d['contract_end'] ?: null,
                     $d['unit_number'], $d['floor_level'], $roomId, $newBedId, $photo,
-                    $d['profile_status'], $d['payment_status'], $id,
+                    $d['profile_status'], $id,
                 ]);
                 if ($oldBedId > 0 && $oldBedId !== $newBedId) release_tenant_bed($pdo, $oldBedId);
                 $bedSt = $pdo->prepare('SELECT bed_number FROM beds WHERE id=?');
@@ -218,14 +209,20 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
 
         if ($action === 'delete') {
             $id = (int)($_POST['id'] ?? 0);
-            $chk = $pdo->prepare('SELECT full_name, photo_path, room_id, bed_id FROM tenant_profiles WHERE id=?');
-            $chk->execute([$id]);
-            $row = $chk->fetch();
-            if (!$row) throw new RuntimeException('Tenant profile not found.');
-            $oldRoomId = (int)($row['room_id'] ?? 0);
-            $oldBedId = (int)($row['bed_id'] ?? 0);
             try {
                 $pdo->beginTransaction();
+                $chk = $pdo->prepare('SELECT full_name, photo_path, room_id, bed_id, profile_status FROM tenant_profiles WHERE id=? FOR UPDATE');
+                $chk->execute([$id]);
+                $row = $chk->fetch();
+                if (!$row) throw new RuntimeException('Tenant profile not found.');
+                if ($row['profile_status'] !== 'Inactive') {
+                    throw new RuntimeException('Tenant is active. Only inactive tenants can be deleted.');
+                }
+                $oldRoomId = (int)($row['room_id'] ?? 0);
+                $oldBedId = (int)($row['bed_id'] ?? 0);
+                $linkedUsers = $pdo->prepare("UPDATE users SET deleted_at=NOW(), status='inactive' WHERE tenant_profile_id=? AND deleted_at IS NULL");
+                $linkedUsers->execute([$id]);
+                $deletedUserCount = $linkedUsers->rowCount();
                 // The linked contract is removed with the tenant (cascade also
                 // covers this, but keep it explicit for schemas without the FK).
                 $pdo->prepare('DELETE FROM contracts WHERE tenant_profile_id=?')->execute([$id]);
@@ -239,7 +236,9 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             tenant_remove_photo($row['photo_path']);
             refresh_room_status($oldRoomId);
             audit_log((int)$user['id'], 'Deleted tenant profile ' . $row['full_name'], 'tenants', (string)$id);
-            flash('success', 'Tenant profile deleted. Its contract was removed and the bed is now available.');
+            $msg = 'Tenant profile deleted. Its contract was removed and the bed is now available.';
+            if ($deletedUserCount > 0) $msg .= ' Its linked user account was also deleted.';
+            flash('success', $msg);
             redirect('index.php?page=tenants');
         }
     } catch (Throwable $t) {
@@ -271,8 +270,7 @@ try {
     $counts = $pdo->query("SELECT
         COUNT(*) AS total,
         SUM(tenant_type='Tenant/Resident') AS resident_count,
-        SUM(tenant_type='Tenant/Commercial') AS commercial_count,
-        SUM(payment_status='Unpaid') AS unpaid_count
+        SUM(tenant_type='Tenant/Commercial') AS commercial_count
         FROM tenant_profiles")->fetch() ?: [];
 } catch (Throwable $t) {
     $rows = []; $counts = [];
@@ -293,11 +291,10 @@ $renderUnitOptions = static function (array $unitRooms, string $selectedUnit, st
 ?>
 <?php if ($err): ?><div class="alert error"><?=e($err)?></div><?php endif; ?>
 
-<div class="grid g4" style="margin-bottom:14px">
+<div class="grid g3" style="margin-bottom:14px">
   <div class="card stat"><b><?=e((string)($counts['total'] ?? 0))?></b><span>Total Tenant Profiles</span></div>
   <div class="card stat"><b><?=e((string)($counts['resident_count'] ?? 0))?></b><span>Tenant / Resident</span></div>
   <div class="card stat"><b><?=e((string)($counts['commercial_count'] ?? 0))?></b><span>Tenant / Commercial</span></div>
-  <div class="card stat"><b><?=e((string)($counts['unpaid_count'] ?? 0))?></b><span>Unpaid</span></div>
 </div>
 
 <div class="toolbar">
@@ -320,17 +317,17 @@ $renderUnitOptions = static function (array $unitRooms, string $selectedUnit, st
     <a class="btn sm ghost" href="index.php?page=tenants">Reset</a>
   </form>
   <button class="btn sm" onclick="openModal('mTenantCreate');tenantFilterUnits('createFloor','createUnit','')">+ Add Tenant Profile</button>
-  <a class="btn sm ghost" href="index.php?page=users">Manage Accounts</a>
+  <a class="btn sm ghost" href="index.php?page=tenant_accounts">Manage Accounts</a>
 </div>
 
 <div class="card" style="padding:0;overflow:auto">
 <table class="tbl">
   <thead><tr>
     <th>2x2 Photo</th><th>Complete Name</th><th>Role</th><th>Email</th><th>Phone / Cp No.</th>
-    <th>Floor</th><th>Unit No.</th><th>Bed</th><th>Contract Start</th><th>Contract End</th><th>Status</th><th>Payment Status</th><th class="no-print">Actions</th>
+    <th>Floor</th><th>Unit No.</th><th>Bed</th><th>Contract Start</th><th>Contract End</th><th>Status</th><th class="no-print">Actions</th>
   </tr></thead>
   <tbody>
-  <?php if (!$rows): ?><tr><td colspan="13">No tenant profiles found.</td></tr><?php endif; ?>
+  <?php if (!$rows): ?><tr><td colspan="12">No tenant profiles found.</td></tr><?php endif; ?>
   <?php foreach ($rows as $r): ?>
     <tr>
       <td>
@@ -350,11 +347,10 @@ $renderUnitOptions = static function (array $unitRooms, string $selectedUnit, st
       <td><?=e($dateVal($r['contract_start']) ?: '—')?></td>
       <td><?=e($dateVal($r['contract_end']) ?: '—')?></td>
       <td><span class="pill <?=tenant_profile_status_class($r['profile_status'])?>"><?=e($r['profile_status'])?></span></td>
-      <td><span class="pill <?=tenant_payment_status_class($r['payment_status'])?>"><?=e($r['payment_status'])?></span></td>
       <td class="no-print" style="white-space:nowrap">
         <a class="btn sm ghost" href="index.php?page=billing&q=<?=urlencode($r['full_name'])?>">Billing</a>
         <button class="btn sm ghost" onclick="openModal('edit-<?=(int)$r['id']?>');tenantFilterUnits('editFloor-<?=(int)$r['id']?>','editUnit-<?=(int)$r['id']?>','<?=e($r['unit_number'])?>')">Edit</button>
-        <form method="post" style="display:inline" onsubmit="return confirmDel('Delete this tenant profile?')">
+        <form method="post" style="display:inline" onsubmit="return confirmDel('Delete this tenant profile and its linked user account? Only inactive tenants can be deleted.')">
           <?=csrf_field()?><input type="hidden" name="action" value="delete"><input type="hidden" name="id" value="<?=(int)$r['id']?>">
           <button class="btn sm danger">Delete</button>
         </form>
@@ -404,11 +400,6 @@ $renderUnitOptions = static function (array $unitRooms, string $selectedUnit, st
       <div class="field"><label>Date start of Contract</label><input name="contract_start" type="date"></div>
       <div class="field"><label>Date End of Contract</label><input name="contract_end" type="date"></div>
       <div class="field" style="grid-column:1/-1"><small style="color:var(--muted)">Enter both dates to create this tenant's contract automatically. It will appear in Contracts and Contract Monitoring.</small></div>
-      <div class="field"><label>Payment Status</label>
-        <select name="payment_status" required>
-          <?php foreach ($PAYMENT_STATUSES as $s): ?><option value="<?=e($s)?>" <?=$s==='Unpaid'?'selected':''?>><?=e($s)?></option><?php endforeach; ?>
-        </select>
-      </div>
     </div>
     <div class="row"><button class="btn sm">Save</button><button type="button" class="btn sm ghost" onclick="closeModal('mTenantCreate')">Cancel</button></div>
   </form>
@@ -462,34 +453,6 @@ $renderUnitOptions = static function (array $unitRooms, string $selectedUnit, st
       <div class="field"><label>Date start of Contract</label><input name="contract_start" type="date" value="<?=e($dateVal($r['contract_start']))?>"></div>
       <div class="field"><label>Date End of Contract</label><input name="contract_end" type="date" value="<?=e($dateVal($r['contract_end']))?>"></div>
       <div class="field" style="grid-column:1/-1"><small style="color:var(--muted)">Both dates keep the linked contract in Contracts / Contract Monitoring in sync. Clearing both removes it.</small></div>
-      <div class="field"><label>Payment Status</label>
-        <?php
-          $hasBillingForThis = false;
-          try {
-              $q1 = $pdo->prepare('SELECT COUNT(*) FROM tenant_billing_payments WHERE tenant_profile_id = ?');
-              $q1->execute([(int)$r['id']]);
-              if ((int)$q1->fetchColumn() > 0) $hasBillingForThis = true;
-              if (!$hasBillingForThis && !empty($r['email'])) {
-                  $q2 = $pdo->prepare('SELECT COUNT(*) FROM tenant_billing_payments WHERE LOWER(email)=LOWER(?)');
-                  $q2->execute([$r['email']]);
-                  if ((int)$q2->fetchColumn() > 0) $hasBillingForThis = true;
-              }
-              if (!$hasBillingForThis) {
-                  $q3 = $pdo->prepare('SELECT COUNT(*) FROM bills b JOIN residents r2 ON r2.residents_id = b.resident_id JOIN users u ON u.id = r2.user_id WHERE LOWER(u.name)=LOWER(?) OR LOWER(u.email)=LOWER(?)');
-                  $q3->execute([$r['full_name'], $r['email'] ?: '']);
-                  if ((int)$q3->fetchColumn() > 0) $hasBillingForThis = true;
-              }
-          } catch (Throwable $t) {}
-        ?>
-        <select name="payment_status" required>
-          <?php foreach ($PAYMENT_STATUSES as $s): 
-            $disabled = (!$hasBillingForThis && in_array($s, ['Paid','Partial'], true) && $r['payment_status'] !== $s) ? 'disabled' : '';
-          ?>
-            <option value="<?=e($s)?>" <?=$r['payment_status']===$s?'selected':''?> <?=$disabled?>><?=e($s)?><?= $disabled ? ' (No billing)' : '' ?></option>
-          <?php endforeach; ?>
-        </select>
-        <?php if (!$hasBillingForThis): ?><small style="color:var(--muted)">Paid/Partial are disabled until a billing record exists.</small><?php endif; ?>
-      </div>
     </div>
     <div class="row"><button class="btn sm">Save</button><button type="button" class="btn sm ghost" onclick="closeModal('edit-<?=(int)$r['id']?>')">Cancel</button></div>
   </form>

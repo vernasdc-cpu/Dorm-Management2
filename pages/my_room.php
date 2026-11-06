@@ -1,8 +1,8 @@
 <?php
-// pages/my_room.php — Resident view of assigned room + roommates.
+// pages/my_room.php — Resident view of assigned room and anonymized occupancy.
 // Role: resident. Included AFTER layout_header. $user is available.
 
-$resident = null; $alloc = null; $room = null; $mates = []; $loadError = null;
+$resident = null; $alloc = null; $room = null; $roommateCount = 0; $loadError = null;
 try {
     $pdo = db();
     $st = $pdo->prepare('SELECT * FROM residents WHERE user_id=?');
@@ -25,13 +25,10 @@ try {
             $room = $r->fetch() ?: null;
         }
         if ($room) {
-            $m = $pdo->prepare("SELECT u.name, a.bed_no FROM room_allocations a
-                JOIN residents res ON res.residents_id=a.resident_id
-                JOIN users u ON u.id=res.user_id
-                WHERE a.room_id=? AND a.status IN ('active','reserved') AND a.resident_id<>?
-                ORDER BY a.bed_no");
+            $m = $pdo->prepare("SELECT COUNT(*) FROM room_allocations
+                WHERE room_id=? AND status IN ('active','reserved') AND resident_id<>?");
             $m->execute([$room['id'], $resident['residents_id']]);
-            $mates = $m->fetchAll();
+            $roommateCount = (int)$m->fetchColumn();
         }
     }
 } catch (Throwable $e) {
@@ -70,14 +67,7 @@ try {
 </div>
 
 <div class="card" style="margin-top:14px">
-  <h3>Roommates (<?=count($mates)?>)</h3>
-  <?php if (!$mates): ?><p style="color:#7c6f8a">No roommates assigned to this room right now.</p>
-  <?php else: ?>
-  <table class="tbl"><thead><tr><th>Name</th><th>Bed</th></tr></thead><tbody>
-    <?php foreach ($mates as $mt): ?>
-      <tr><td><?=e($mt['name'])?></td><td><?=e($mt['bed_no'] ?? '—')?></td></tr>
-    <?php endforeach; ?>
-  </tbody></table>
-  <?php endif; ?>
+  <h3>Other occupants</h3>
+  <p><?=e($roommateCount)?> other occupant<?= $roommateCount === 1 ? '' : 's' ?> currently assigned to this room.</p>
 </div>
 <?php endif; ?>

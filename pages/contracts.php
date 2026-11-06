@@ -3,6 +3,59 @@
 $pdo = db();
 $err = null;
 
+function contract_upload_files(?array $input): array {
+    if (!$input || !isset($input['name'])) return [];
+
+    $files = [];
+    if (is_array($input['name'])) {
+        foreach ($input['name'] as $index => $name) {
+            $file = [
+                'name' => $name,
+                'type' => $input['type'][$index] ?? '',
+                'tmp_name' => $input['tmp_name'][$index] ?? '',
+                'error' => $input['error'][$index] ?? UPLOAD_ERR_NO_FILE,
+                'size' => $input['size'][$index] ?? 0,
+            ];
+            if ((int)$file['error'] !== UPLOAD_ERR_NO_FILE) $files[] = $file;
+        }
+    } elseif ((int)($input['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_NO_FILE) {
+        $files[] = $input;
+    }
+
+    if (count($files) > 3) throw new RuntimeException('You can upload a maximum of 3 contract documents at a time.');
+    foreach ($files as $file) {
+        $msg = validate_upload($file, ['pdf','doc','docx','jpg','jpeg','png'], 5);
+        if ($msg) throw new RuntimeException('Contract upload failed for ' . basename((string)$file['name']) . ': ' . $msg);
+    }
+    return $files;
+}
+
+$saveContractDocuments = static function (int $contractId, array $files) use ($pdo, $user): array {
+    $storedFiles = [];
+    $ins = $pdo->prepare('INSERT INTO contract_documents (contract_id, file_name, file_path, file_type, file_size, uploaded_by) VALUES (?,?,?,?,?,?)');
+    try {
+        foreach ($files as $file) {
+            $stored = safe_store_upload($file, __DIR__ . '/../uploads/contracts');
+            $storedFiles[] = $stored;
+            $ins->execute([
+                $contractId,
+                $file['name'],
+                $stored,
+                pathinfo((string)$file['name'], PATHINFO_EXTENSION),
+                (int)$file['size'],
+                (int)$user['id'],
+            ]);
+        }
+    } catch (Throwable $t) {
+        foreach ($storedFiles as $stored) {
+            $path = __DIR__ . '/../uploads/contracts/' . basename($stored);
+            if (is_file($path)) unlink($path);
+        }
+        throw $t;
+    }
+    return $storedFiles;
+};
+
 // ---------- POST handlers ----------
 if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
     csrf_check();
@@ -29,21 +82,25 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             if (!$chk->fetch()) throw new RuntimeException('Selected resident is not active.');
             $contractNo = trim($_POST['contract_number'] ?? '');
             if ($contractNo === '') $contractNo = 'CTR-' . date('Y') . '-' . strtoupper(substr(bin2hex(random_bytes(3)), 0, 6));
-            $st = $pdo->prepare('INSERT INTO contracts (contract_number, resident_id, room_id, start_date, end_date, monthly_rate, status, terms, created_by) VALUES (?,?,?,?,?,?,?,?,?)');
-            $st->execute([$contractNo, $residentId, $roomId, $start, $end, $rate, $status, $terms ?: null, (int)$user['id']]);
-            $cid = (int)$pdo->lastInsertId();
-            // Optional document
-            if (!empty($_FILES['document']) && (int)($_FILES['document']['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_NO_FILE) {
-                $msg = validate_upload($_FILES['document'], ['pdf','doc','docx','jpg','jpeg','png'], 5);
-                if ($msg) throw new RuntimeException('Contract upload failed. Please check the file type and size.');
-                try {
-                    $stored = safe_store_upload($_FILES['document'], __DIR__ . '/../uploads/contracts');
-                } catch (Throwable $t) { throw new RuntimeException('Contract upload failed. Please check the file type and size.'); }
-                $ins = $pdo->prepare('INSERT INTO contract_documents (contract_id, file_name, file_path, file_type, file_size, uploaded_by) VALUES (?,?,?,?,?,?)');
-                $ins->execute([$cid, $_FILES['document']['name'], $stored, pathinfo($_FILES['document']['name'], PATHINFO_EXTENSION), (int)$_FILES['document']['size'], (int)$user['id']]);
+            $files = contract_upload_files($_FILES['documents'] ?? $_FILES['document'] ?? null);
+            $storedFiles = [];
+            try {
+                $pdo->beginTransaction();
+                $st = $pdo->prepare('INSERT INTO contracts (contract_number, resident_id, room_id, start_date, end_date, monthly_rate, status, terms, created_by) VALUES (?,?,?,?,?,?,?,?,?)');
+                $st->execute([$contractNo, $residentId, $roomId, $start, $end, $rate, $status, $terms ?: null, (int)$user['id']]);
+                $cid = (int)$pdo->lastInsertId();
+                $storedFiles = $saveContractDocuments($cid, $files);
+                $pdo->commit();
+            } catch (Throwable $t) {
+                if ($pdo->inTransaction()) $pdo->rollBack();
+                foreach ($storedFiles as $stored) {
+                    $path = __DIR__ . '/../uploads/contracts/' . basename($stored);
+                    if (is_file($path)) unlink($path);
+                }
+                throw $t;
             }
             audit_log((int)$user['id'], 'Created contract ' . $contractNo, 'contracts', (string)$cid);
-            flash('success', 'Contract created.');
+            flash('success', 'Contract created.' . (count($files) ? ' ' . count($files) . ' document(s) uploaded.' : ''));
             redirect('index.php?page=contracts');
         }
         if ($action === 'update') {
@@ -86,18 +143,26 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
         if ($action === 'replace_doc') {
             $id = (int)($_POST['id'] ?? 0);
             if ($id <= 0) throw new RuntimeException('Invalid contract.');
-            if (empty($_FILES['document']) || (int)$_FILES['document']['error'] === UPLOAD_ERR_NO_FILE) {
-                throw new RuntimeException('Contract upload failed. Please check the file type and size.');
-            }
-            $msg = validate_upload($_FILES['document'], ['pdf','doc','docx','jpg','jpeg','png'], 5);
-            if ($msg) throw new RuntimeException('Contract upload failed. Please check the file type and size.');
+            $files = contract_upload_files($_FILES['documents'] ?? $_FILES['document'] ?? null);
+            if (!$files) throw new RuntimeException('Please select at least one contract document.');
+            $exists = $pdo->prepare('SELECT id FROM contracts WHERE id=?');
+            $exists->execute([$id]);
+            if (!$exists->fetchColumn()) throw new RuntimeException('Contract not found.');
+            $storedFiles = [];
             try {
-                $stored = safe_store_upload($_FILES['document'], __DIR__ . '/../uploads/contracts');
-            } catch (Throwable $t) { throw new RuntimeException('Contract upload failed. Please check the file type and size.'); }
-            $ins = $pdo->prepare('INSERT INTO contract_documents (contract_id, file_name, file_path, file_type, file_size, uploaded_by) VALUES (?,?,?,?,?,?)');
-            $ins->execute([$id, $_FILES['document']['name'], $stored, pathinfo($_FILES['document']['name'], PATHINFO_EXTENSION), (int)$_FILES['document']['size'], (int)$user['id']]);
-            audit_log((int)$user['id'], 'Replaced contract document #' . $id, 'contracts', (string)$id);
-            flash('success', 'Document uploaded.');
+                $pdo->beginTransaction();
+                $storedFiles = $saveContractDocuments($id, $files);
+                $pdo->commit();
+            } catch (Throwable $t) {
+                if ($pdo->inTransaction()) $pdo->rollBack();
+                foreach ($storedFiles as $stored) {
+                    $path = __DIR__ . '/../uploads/contracts/' . basename($stored);
+                    if (is_file($path)) unlink($path);
+                }
+                throw $t;
+            }
+            audit_log((int)$user['id'], 'Uploaded contract documents #' . $id, 'contracts', (string)$id);
+            flash('success', count($files) . ' document(s) uploaded.');
             redirect('index.php?page=contracts');
         }
         if ($action === 'archive') {
@@ -164,6 +229,17 @@ foreach ($rows as $c) {
     $c['_computed'] = $computed;
     $c['_days'] = days_remaining(substr((string)$c['end_date'], 0, 10));
     $filtered[] = $c;
+}
+
+$documentsByContract = [];
+if ($filtered) {
+    $contractIds = array_map(static fn(array $contract): int => (int)$contract['id'], $filtered);
+    $placeholders = implode(',', array_fill(0, count($contractIds), '?'));
+    $docSt = $pdo->prepare("SELECT id, contract_id, file_name FROM contract_documents WHERE contract_id IN ($placeholders) ORDER BY id");
+    $docSt->execute($contractIds);
+    foreach ($docSt->fetchAll() as $doc) {
+        $documentsByContract[(int)$doc['contract_id']][] = $doc;
+    }
 }
 
 // Expiration warnings
@@ -237,7 +313,7 @@ function pill_class(string $s): string {
         <?php if ($c['latest_doc_id']): ?>
           <a class="btn sm ghost" href="index.php?page=download&amp;type=contract&amp;id=<?=(int)$c['latest_doc_id']?>">Download</a>
         <?php endif; ?>
-        <button class="btn sm ghost" onclick="openModal('doc-<?=(int)$c['id']?>')">Replace doc</button>
+        <button class="btn sm ghost" onclick="openModal('doc-<?=(int)$c['id']?>')">Add documents</button>
         <?php if ($c['_computed'] !== 'Terminated'): ?>
         <form method="post" style="display:inline" onsubmit="return confirm('Archive this contract (set Terminated)?')">
           <?=csrf_field()?><input type="hidden" name="action" value="archive"><input type="hidden" name="id" value="<?=(int)$c['id']?>">
@@ -288,7 +364,7 @@ function pill_class(string $s): string {
       </div>
     </div>
     <div class="field"><label>Terms</label><textarea name="terms" rows="3" placeholder="Contract terms…"></textarea></div>
-    <div class="field"><label>Document (optional · pdf/doc/docx/jpg/png ≤5MB)</label><input type="file" name="document" accept=".pdf,.doc,.docx,.jpg,.jpeg,.png"></div>
+    <div class="field"><label>Documents (optional · select up to 3 files, each ≤5MB)</label><input type="file" name="documents[]" multiple accept=".pdf,.doc,.docx,.jpg,.jpeg,.png"></div>
     <div class="row"><button class="btn sm">Save</button><button type="button" class="btn sm ghost" onclick="closeModal('mCreate')">Cancel</button></div>
   </form>
 </div></div>
@@ -303,7 +379,17 @@ function pill_class(string $s): string {
   <strong>Rate:</strong> ₱<?=e(number_format((float)$c['monthly_rate'],2))?><br>
   <strong>Status:</strong> <span class="pill <?=pill_class($c['_computed'])?>"><?=e($c['_computed'])?></span></p>
   <p><strong>Terms:</strong><br><?=nl2br(e($c['terms'] ?? '—'))?></p>
-  <?php if ($c['latest_doc_id']): ?><p><a class="btn sm ghost" href="index.php?page=download&amp;type=contract&amp;id=<?=(int)$c['latest_doc_id']?>">Download <?=e($c['latest_doc_name'] ?? 'document')?></a></p><?php endif; ?>
+  <p><strong>Documents:</strong></p>
+  <?php $contractDocs = $documentsByContract[(int)$c['id']] ?? []; ?>
+  <?php if ($contractDocs): ?>
+    <ul>
+      <?php foreach ($contractDocs as $doc): ?>
+        <li><a href="index.php?page=download&amp;type=contract&amp;id=<?=(int)$doc['id']?>"><?=e($doc['file_name'])?></a></li>
+      <?php endforeach; ?>
+    </ul>
+  <?php else: ?>
+    <p>—</p>
+  <?php endif; ?>
   <button class="btn sm ghost" onclick="closeModal('view-<?=(int)$c['id']?>')">Close</button>
 </div></div>
 <!-- Edit modal -->
@@ -334,13 +420,13 @@ function pill_class(string $s): string {
     <div class="row"><button class="btn sm">Save</button><button type="button" class="btn sm ghost" onclick="closeModal('edit-<?=(int)$c['id']?>')">Cancel</button></div>
   </form>
 </div></div>
-<!-- Replace doc modal -->
+<!-- Add documents modal -->
 <div class="modal" id="doc-<?=(int)$c['id']?>"><div class="box">
-  <h3>Replace document — <?=e($c['contract_number'])?></h3>
-  <p style="font-size:13px;color:#7c6f8a">Uploading adds a new version (history is kept).</p>
+  <h3>Add documents — <?=e($c['contract_number'])?></h3>
+  <p style="font-size:13px;color:#7c6f8a">Select up to 3 files. Existing documents will be kept.</p>
   <form method="post" enctype="multipart/form-data">
     <?=csrf_field()?><input type="hidden" name="action" value="replace_doc"><input type="hidden" name="id" value="<?=(int)$c['id']?>">
-    <div class="field"><label>New file (pdf/doc/docx/jpg/png ≤5MB)</label><input type="file" name="document" required accept=".pdf,.doc,.docx,.jpg,.jpeg,.png"></div>
+    <div class="field"><label>Files (pdf/doc/docx/jpg/png, each ≤5MB)</label><input type="file" name="documents[]" required multiple accept=".pdf,.doc,.docx,.jpg,.jpeg,.png"></div>
     <div class="row"><button class="btn sm">Upload</button><button type="button" class="btn sm ghost" onclick="closeModal('doc-<?=(int)$c['id']?>')">Cancel</button></div>
   </form>
 </div></div>

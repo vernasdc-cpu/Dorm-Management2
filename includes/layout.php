@@ -48,6 +48,13 @@ function layout_header(string $title, array $user): void {
         ];
     }
     $page = $_GET['page'] ?? 'dashboard';
+    if ($role === 'resident') {
+        try {
+            purge_expired_tenant_notifications(db(), (int)$user['id']);
+        } catch (Throwable $t) {
+            error_log('Tenant notification cleanup failed: ' . $t->getMessage());
+        }
+    }
     try { $unread = (int)db()->query('SELECT COUNT(*) FROM notifications WHERE recipient_id='.(int)$user['id'].' AND is_read=0')->fetchColumn(); }
     catch (Throwable $t) { $unread = 0; }
     ?>

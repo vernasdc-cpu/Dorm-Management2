@@ -447,7 +447,7 @@ try {
 
         // Tenant profiles assigned to these rooms (added from the Tenant Profiles page).
         try {
-            $tps = $pdo->prepare("SELECT id, room_id, bed_id, full_name, tenant_type, phone, payment_status, photo_path
+            $tps = $pdo->prepare("SELECT id, room_id, bed_id, full_name, tenant_type, phone, photo_path
                                   FROM tenant_profiles WHERE room_id IN ($ph) ORDER BY full_name");
             $tps->execute($ids);
             foreach ($tps->fetchAll() as $tRow) {
@@ -632,11 +632,10 @@ try {
 
       <h4 style="margin:16px 0 6px">Tenant Profiles in this Room (<?=count($tenantsByRoom[$r['id']] ?? [])?>)</h4>
       <div style="overflow:auto">
-      <table class="tbl"><thead><tr><th>Photo</th><th>Complete Name</th><th>Role</th><th>Phone / Cp</th><th>Status</th></tr></thead><tbody>
+      <table class="tbl"><thead><tr><th>Photo</th><th>Complete Name</th><th>Role</th><th>Phone / Cp</th></tr></thead><tbody>
         <?php if (empty($tenantsByRoom[$r['id']])): ?>
-          <tr><td colspan="5">No tenant profiles assigned to this room.</td></tr>
-        <?php else: foreach ($tenantsByRoom[$r['id']] as $tp):
-          $pc = $tp['payment_status'] === 'Paid' ? 'ok' : ($tp['payment_status'] === 'Partial' ? 'warn' : 'bad'); ?>
+          <tr><td colspan="4">No tenant profiles assigned to this room.</td></tr>
+        <?php else: foreach ($tenantsByRoom[$r['id']] as $tp): ?>
           <tr>
             <td>
               <?php if (!empty($tp['photo_path'])): ?>
@@ -646,7 +645,6 @@ try {
             <td><strong><?=e($tp['full_name'])?></strong></td>
             <td><span class="pill info"><?=e($tp['tenant_type'])?></span></td>
             <td><?=e($tp['phone'] ?? '—')?></td>
-            <td><span class="pill <?=$pc?>"><?=e($tp['payment_status'])?></span></td>
           </tr>
         <?php endforeach; endif; ?>
       </tbody></table>

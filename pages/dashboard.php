@@ -139,40 +139,21 @@ $rmSt = $all('SELECT status s, COUNT(*) c FROM rooms GROUP BY status');
 <?php endforeach; if (!$rmSt) echo '<tr><td colspan="2">No rooms.</td></tr>'; ?></table></div>
 </div>
 <?php else:
-$res = $uno('SELECT * FROM residents WHERE user_id=?', [$uid]);
+$ctx = get_tenant_context($user) ?: ['resident' => null, 'tenant_profile' => null];
+$res = $ctx['resident'];
+$tenantProfile = $ctx['tenant_profile'];
 $rid = (int)($res['residents_id'] ?? 0);
 $room = $rid ? $uno('SELECT r.room_number, t.name tname FROM residents rs LEFT JOIN rooms r ON r.id=rs.room_id LEFT JOIN room_types t ON t.id=r.room_type_id WHERE rs.residents_id=?', [$rid]) : [];
 $ct = $rid ? $uno('SELECT * FROM contracts WHERE resident_id=? ORDER BY end_date DESC LIMIT 1', [$rid]) : [];
-// Also check tenant profile contract
-if (!$ct) {
-    $tp = $uno('SELECT * FROM tenant_profiles WHERE email = ? OR full_name = ? ORDER BY id DESC LIMIT 1', [$user['email'] ?? '', $user['name'] ?? '']);
-    if ($tp) {
-        $ct = $uno('SELECT * FROM contracts WHERE tenant_profile_id = ? ORDER BY end_date DESC LIMIT 1', [(int)$tp['id']]);
-    }
+if (!$ct && $tenantProfile) {
+    $ct = $uno('SELECT * FROM contracts WHERE tenant_profile_id = ? ORDER BY end_date DESC LIMIT 1', [(int)$tenantProfile['id']]);
 }
 $cStat = $ct ? contract_computed_status($ct) : 'No contract';
 $cDays = $ct ? (int)$one('SELECT DATEDIFF(?,CURDATE())', [$ct['end_date']]) : 0;
-$bal = $rid ? (float)$one("SELECT COALESCE(SUM(balance),0) FROM bills WHERE resident_id=? AND payment_status!='Paid'", [$rid]) : 0;
-if ($bal == 0) {
-    // try via tenant profile
-    try {
-        $tp2 = $uno('SELECT * FROM tenant_profiles WHERE email = ? OR full_name = ? ORDER BY id DESC LIMIT 1', [$user['email'] ?? '', $user['name'] ?? '']);
-        if ($tp2) {
-            $bal = (float)$one("SELECT COALESCE(SUM(b.balance),0) FROM bills b JOIN residents r ON r.residents_id = b.resident_id JOIN users u ON u.id = r.user_id WHERE (LOWER(u.email)=LOWER(?) OR LOWER(u.name)=LOWER(?)) AND b.payment_status!='Paid'", [$tp2['email'] ?? '', $tp2['full_name'] ?? '']);
-        }
-    } catch (Throwable $t) {}
-}
+$bal = (float)$one("SELECT COALESCE(SUM(balance),0) FROM bills WHERE (resident_id=? OR ((resident_id IS NULL OR resident_id=0) AND application_id IN (SELECT id FROM tenant_applications WHERE user_id=?))) AND payment_status!='Paid'", [$rid, $uid]);
 $myRep = $rid ? (int)$one("SELECT COUNT(*) FROM repair_requests WHERE resident_id=? AND status NOT IN ('Completed','Cancelled')", [$rid]) : 0;
 $myUnr = (int)$one('SELECT COUNT(*) FROM notifications WHERE recipient_id=? AND is_read=0', [$uid]);
-$myBills = $rid ? $all('SELECT * FROM bills WHERE resident_id=? ORDER BY id DESC LIMIT 5', [$rid]) : [];
-if (!$myBills) {
-    try {
-        $tp3 = $uno('SELECT * FROM tenant_profiles WHERE email = ? OR full_name = ? ORDER BY id DESC LIMIT 1', [$user['email'] ?? '', $user['name'] ?? '']);
-        if ($tp3) {
-            $myBills = $all("SELECT b.* FROM bills b JOIN residents r ON r.residents_id = b.resident_id JOIN users u ON u.id = r.user_id WHERE (LOWER(u.email)=LOWER(?) OR LOWER(u.name)=LOWER(?)) ORDER BY b.id DESC LIMIT 5", [$tp3['email'] ?? '', $tp3['full_name'] ?? '']);
-        }
-    } catch (Throwable $t) {}
-}
+$myBills = $all('SELECT * FROM bills WHERE resident_id=? OR ((resident_id IS NULL OR resident_id=0) AND application_id IN (SELECT id FROM tenant_applications WHERE user_id=?)) ORDER BY id DESC LIMIT 5', [$rid, $uid]);
 $myReps = $rid ? $all('SELECT * FROM repair_requests WHERE resident_id=? ORDER BY date_reported DESC LIMIT 5', [$rid]) : [];
 $myNot = $all('SELECT * FROM notifications WHERE recipient_id=? ORDER BY id DESC LIMIT 5', [$uid]);
 $annCount = 0;

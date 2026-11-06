@@ -274,7 +274,7 @@ try {
 
     // Keep all profiles in the occupancy list; only active ones are assignable.
     $tenantProfiles = $pdo->query("SELECT tp.id, tp.full_name, tp.email, tp.unit_number, tp.room_id, tp.bed_id,
-              tp.contract_start, tp.contract_end, tp.payment_status, tp.profile_status,
+              tp.contract_start, tp.contract_end, tp.profile_status,
               r.room_number, b.bed_number
         FROM tenant_profiles tp
         LEFT JOIN rooms r ON r.id=tp.room_id
@@ -440,7 +440,6 @@ function allocFilterBeds(rId, bId) {
     <td><?=e($tp['room_number'] ?? ($tp['unit_number'] ?: '—'))?></td>
     <td><?=e($tp['bed_number'] ?? '—')?></td>
     <td><?= $tp['contract_start'] && $tp['contract_end'] ? e($tp['contract_start']) . ' → ' . e($tp['contract_end']) : '—' ?></td>
-    <td><?=e($tp['payment_status'] ?? '—')?></td>
   </tr>
   <?php endforeach; ?>
   </tbody></table></div>

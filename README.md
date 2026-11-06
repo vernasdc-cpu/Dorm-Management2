@@ -6,7 +6,8 @@ runs in **Docker** locally and on **Hostinger** (shared or VPS).
 
 ## Features
 - Role-based access: Super Admin, Admin Staff, Housekeeping, Resident
-- Tenant Profiles: Tenant/Resident & Tenant/Commercial records with 2x2 photo, floor/unit assignment, contract dates and payment status; assigned tenants appear in Room Details and automatically occupy one bed (remaining beds show Available)
+- Tenant portal: each tenant sees their own account-linked dashboard and records; roommate identities are not shown
+- Tenant Profiles: Tenant/Resident & Tenant/Commercial records with 2x2 photo, floor/unit assignment, contract dates and payment status; assigned tenants appear in Room Details and automatically occupy one bed (remaining beds show Available). Profiles with an email also get a linked tenant portal account and welcome email.
 - Housekeeping cleaning records: housekeepers log Date, Unit, Status (Clean/Unclean) and Remark/Note; super admin can manage all records
 - Login with rate limiting, password hashing, CSRF, audit logs
 - Dashboards per role with Chart.js charts
@@ -58,11 +59,16 @@ Open: app http://localhost:8080 · phpMyAdmin http://localhost:8081 · Mailpit h
 
 Existing databases created before Tenant Profiles: import `database/03-tenant-profiles.sql`,
 `database/04-tenant-profile-extensions.sql`, `database/05-housekeeping-records.sql`,
-`database/06-tenant-beds.sql`, `database/07-tenant-contracts.sql` and
+`database/06-tenant-beds.sql`, `database/07-tenant-contracts.sql`,
+`database/08-tenant-billing-payments.sql` and
 `database/12-tenant-profile-status.sql` (all are safe to run again).
 Migration 06 adds tenant-to-bed links and refreshes room occupancy. Migration 07 links tenant
 profiles to contracts and backfills profiles that already have contract dates.
+Migration 08 creates the tenant billing payment submissions table.
 Migration 12 adds an Active/Inactive profile status without changing payment status.
+Migration 16 creates the tenant Reports/Maintenance table.
+Migration 17 tracks when notifications are read. Tenant notifications are automatically
+removed after 3 days when read, or after 7 days if unread, as the tenant uses the app.
 Migration 14 adds units by floor and links existing rooms to the unit number before
 their dash (for example, room `301-1` is linked to Unit `301`). New units can be
 added from the Rooms page; use **Create Room** to add rooms to a unit.
@@ -70,6 +76,11 @@ added from the Rooms page; use **Create Room** to add rooms to a unit.
 Saving a tenant profile with both contract dates now automatically creates or updates its contract,
 so it appears in **Contracts** and **Contract Monitoring** without a separate portal account.
 Updating the contract dates in either place keeps the tenant profile in sync.
+
+Adding a tenant profile with an email creates or links a tenant portal account and sends a welcome
+email. New accounts use the tenant's name with spaces removed followed by `@123` as the initial
+password; tenants can change it from **My Profile** after logging in. Use **Manage Accounts** from
+Tenant Profiles to review tenant accounts and create missing accounts.
 
 Email reminders use Mailpit by default in Docker. Mailpit catches outgoing messages locally, so no
 real inbox is used; open http://localhost:8025 to read them. To deliver to real inboxes, replace the

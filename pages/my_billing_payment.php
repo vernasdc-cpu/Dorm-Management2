@@ -7,8 +7,9 @@ if (!in_array($user['role'] ?? '', ['resident'], true)) {
 }
 
 $pdo = db();
+$ctx = get_tenant_context($user);
 $me = null;
-$tenantProfile = null;
+$tenantProfile = $ctx['tenant_profile'] ?? null;
 $room = null;
 
 try {
@@ -25,10 +26,6 @@ try {
         }
     }
     
-    // Also try to find matching tenant profile by email/name
-    $tst = $pdo->prepare("SELECT * FROM tenant_profiles WHERE LOWER(email) = LOWER(?) OR full_name = ? ORDER BY id DESC LIMIT 1");
-    $tst->execute([$user['email'] ?? '', $user['name'] ?? '']);
-    $tenantProfile = $tst->fetch();
     if ($tenantProfile && !$room && $tenantProfile['room_id']) {
         $rst = $pdo->prepare('SELECT * FROM rooms WHERE id = ?');
         $rst->execute([(int)$tenantProfile['room_id']]);
@@ -99,7 +96,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                 $me ? (int)$me['residents_id'] : null,
                 (int)$user['id'],
                 $fullName, $email ?: null, $phone ?: null, $unitNumber,
-                $room ? (int)$room['id'] : ($tenantProfile['room_id'] ? (int)$tenantProfile['room_id'] : null),
+                $room ? (int)$room['id'] : (!empty($tenantProfile['room_id']) ? (int)$tenantProfile['room_id'] : null),
                 $unitRoomPrice, $electricity, $water,
                 $othersFeeType, $othersFeeLabel, $othersFeeAmount,
                 $totalPrice, $paymentType, $amountPaid, $dateOfPayment, $screenshotPath

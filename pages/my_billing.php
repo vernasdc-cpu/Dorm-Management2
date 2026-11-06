@@ -35,10 +35,10 @@ try {
         foreach ($pays as $p) $byBill[(int)$p['bill_id']][] = $p;
     }
     
-    // Also include initial/application bills by email/name
+    // Include application bills only when the application is linked to this account.
     try {
-        $bst2 = $pdo->prepare("SELECT b.*, rm.room_number, ta.full_name, ta.email FROM bills b LEFT JOIN rooms rm ON rm.id = b.room_id LEFT JOIN tenant_applications ta ON ta.id = b.application_id WHERE (b.resident_id IS NULL OR b.resident_id = 0) AND (LOWER(ta.email)=LOWER(?) OR LOWER(ta.full_name)=LOWER(?)) ORDER BY b.id DESC");
-        $bst2->execute([$user['email'] ?? '', $user['name'] ?? '']);
+        $bst2 = $pdo->prepare("SELECT b.*, rm.room_number, ta.full_name, ta.email FROM bills b LEFT JOIN rooms rm ON rm.id = b.room_id JOIN tenant_applications ta ON ta.id = b.application_id WHERE (b.resident_id IS NULL OR b.resident_id = 0) AND ta.user_id = ? ORDER BY b.id DESC");
+        $bst2->execute([(int)$user['id']]);
         $bills2 = $bst2->fetchAll();
         foreach ($bills2 as $bb) {
             // avoid duplicates
@@ -47,8 +47,8 @@ try {
             if (!$exists) $bills[] = $bb;
         }
         if ($rid == 0 && $bills2) {
-            $balQ2 = $pdo->prepare("SELECT COALESCE(SUM(balance),0) FROM bills b LEFT JOIN tenant_applications ta ON ta.id = b.application_id WHERE (b.resident_id IS NULL OR b.resident_id = 0) AND (LOWER(ta.email)=LOWER(?) OR LOWER(ta.full_name)=LOWER(?)) AND b.payment_status IN ('Unpaid','Partially Paid','Overdue')");
-            $balQ2->execute([$user['email'] ?? '', $user['name'] ?? '']);
+            $balQ2 = $pdo->prepare("SELECT COALESCE(SUM(b.balance),0) FROM bills b JOIN tenant_applications ta ON ta.id = b.application_id WHERE (b.resident_id IS NULL OR b.resident_id = 0) AND ta.user_id = ? AND b.payment_status IN ('Unpaid','Partially Paid','Overdue')");
+            $balQ2->execute([(int)$user['id']]);
             $balance = (float)($balQ2->fetchColumn() ?: 0);
         }
     } catch (Throwable $t) {}
