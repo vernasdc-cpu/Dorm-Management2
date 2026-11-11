@@ -483,7 +483,7 @@ try {
     <p>No units have been added yet. Add a unit before creating rooms.</p>
   <?php else: ?>
     <div style="overflow:auto">
-      <table class="tbl"><thead><tr><th>Unit number</th><th>Floor</th><th>Rooms</th></tr></thead><tbody>
+      <table class="tbl"><thead><tr><th>Unit number</th><th>Floor</th><th>Rooms number</th></tr></thead><tbody>
       <?php foreach ($units as $unit): ?>
         <tr><td><strong><?=e($unit['unit_number'])?></strong></td><td><?=e($unit['floor_name'])?></td><td><?=(int)$unit['room_count']?></td></tr>
       <?php endforeach; ?>

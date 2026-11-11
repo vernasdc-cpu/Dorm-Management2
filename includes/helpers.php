@@ -1,7 +1,13 @@
 <?php
 // Shared helpers: escaping, csrf, flash, audit, upload validation
 if (session_status() === PHP_SESSION_NONE) {
-    session_set_cookie_params(['lifetime'=>0,'path'=>'/','httponly'=>true,'samesite'=>'Lax']);
+    session_set_cookie_params([
+        'lifetime' => 0,
+        'path' => '/',
+        'secure' => APP_ENV === 'production',
+        'httponly' => true,
+        'samesite' => 'Lax',
+    ]);
     session_start();
 }
 
@@ -31,7 +37,11 @@ function flash(string $key, ?string $msg = null) {
 
 function redirect(string $url): void { header('Location: ' . $url); exit; }
 
-function client_ip(): string { return $_SERVER['REMOTE_ADDR'] ?? 'unknown'; }
+function client_ip(): string {
+    $forwarded = trim(explode(',', (string)($_SERVER['HTTP_X_FORWARDED_FOR'] ?? ''))[0]);
+    if ($forwarded !== '' && filter_var($forwarded, FILTER_VALIDATE_IP)) return $forwarded;
+    return $_SERVER['REMOTE_ADDR'] ?? 'unknown';
+}
 
 function audit_log(?int $userId, string $action, string $module, ?string $recordId = null): void {
     try {

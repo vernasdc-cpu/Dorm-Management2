@@ -5,34 +5,42 @@ services:
     build: .
     container_name: heart-dorm-app
     ports:
-      - "${APP_PORT:-8080}:80"
+      - "127.0.0.1:${APP_PORT:-8080}:80"
     volumes:
       - ./:/var/www/html
       - ./uploads:/var/www/html/uploads
+      - type: volume
+        source: private_references
+        target: /var/www/html/secret
+        volume:
+          nocopy: true
     depends_on:
       db:
         condition: service_healthy
     environment:
+      APP_ENV: ${APP_ENV:-production}
+      APP_KEY: ${APP_KEY:?Set APP_KEY in the Compose environment file}
       DB_HOST: ${DB_HOST:-db}
       DB_PORT: 3306
-      DB_NAME: ${DB_NAME:-heart_dorm_db}
-      DB_USER: ${DB_USER:-heart_dorm}
-      DB_PASS: ${DB_PASS:-change_me_strong_password}
+      DB_NAME: ${DB_NAME:?Set DB_NAME in the Compose environment file}
+      DB_USER: ${DB_USER:?Set DB_USER in the Compose environment file}
+      DB_PASS: ${DB_PASS:?Set DB_PASS in the Compose environment file}
       MAIL_HOST: ${MAIL_HOST:-smtp.gmail.com}
       MAIL_PORT: ${MAIL_PORT:-587}
       MAIL_ENCRYPTION: ${MAIL_ENCRYPTION:-tls}
       MAIL_USER: ${MAIL_USER:-}
       MAIL_PASS: ${MAIL_PASS:-}
-      MAIL_FROM: ${MAIL_FROM:-verna.sdc@gmail.com}
+      MAIL_FROM: ${MAIL_FROM:-no-reply@localhost}
       MAIL_FROM_NAME: ${MAIL_FROM_NAME:-Heart Ladies Dormitory}
-      MAIL_REPLY_TO: ${MAIL_REPLY_TO:-verna.sdc@gmail.com}
+      MAIL_REPLY_TO: ${MAIL_REPLY_TO:-}
     restart: unless-stopped
 
   mailpit:
+    profiles: ["dev"]
     image: axllent/mailpit:latest
     container_name: heart-dorm-mail
     ports:
-      - "${MAILPIT_PORT:-8025}:8025"
+      - "127.0.0.1:${MAILPIT_PORT:-8025}:8025"
     environment:
       MP_MAX_MESSAGES: 5000
     restart: unless-stopped
@@ -42,15 +50,13 @@ services:
     container_name: heart-dorm-db
     command: --default-authentication-plugin=mysql_native_password
     environment:
-      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASS:-root_change_me}
-      MYSQL_DATABASE: ${DB_NAME:-heart_dorm_db}
-      MYSQL_USER: ${DB_USER:-heart_dorm}
-      MYSQL_PASSWORD: ${DB_PASS:-change_me_strong_password}
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASS:?Set DB_ROOT_PASS in the Compose environment file}
+      MYSQL_DATABASE: ${DB_NAME:?Set DB_NAME in the Compose environment file}
+      MYSQL_USER: ${DB_USER:?Set DB_USER in the Compose environment file}
+      MYSQL_PASSWORD: ${DB_PASS:?Set DB_PASS in the Compose environment file}
     volumes:
       - db_data:/var/lib/mysql
       - ./database:/docker-entrypoint-initdb.d:ro
-    ports:
-      - "${DB_PORT:-3307}:3306"
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
       interval: 10s
@@ -60,12 +66,13 @@ services:
     restart: unless-stopped
 
   phpmyadmin:
+    profiles: ["tools"]
     image: phpmyadmin/phpmyadmin:latest
     container_name: heart-dorm-pma
     depends_on:
       - db
     ports:
-      - "${PMA_PORT:-8081}:80"
+      - "127.0.0.1:${PMA_PORT:-8081}:80"
     environment:
       PMA_HOST: db
       PMA_PORT: 3306
@@ -73,3 +80,4 @@ services:
 
 volumes:
   db_data:
+  private_references:

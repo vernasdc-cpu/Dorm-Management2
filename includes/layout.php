@@ -11,7 +11,6 @@ function layout_header(string $title, array $user): void {
         ['billing_payments','Billing Payments','📥'],
         ['payment_verification','Payment Verification','✅'],
         ['billing_corrections','Billing Corrections','🛠️'],
-        ['tenant_applications','Tenant Applications','📋'],
         ['violations','Violations','⚠️'],
         ['admin_reports','Reports/Maintenance','📝'],
         ['manage_announcements','Manage Announcements','📢'],
@@ -20,7 +19,7 @@ function layout_header(string $title, array $user): void {
         ['notifications','Notifications','🔔'],
         ['reports','Reports','📊'],
     ];
-    if ($role === 'super_admin') { $nav[] = ['housekeeping','Housekeeping','🧹']; $nav[] = ['tenants','Tenant Profiles','👤']; $nav[] = ['users','Users & Staff','👥']; $nav[] = ['audit','Audit Logs','📋']; $nav[] = ['settings','Settings','⚙']; }
+    if ($role === 'super_admin') { $nav[] = ['housekeeping','Housekeeping','🧹']; $nav[] = ['tenants','Tenant Profiles','👤']; $nav[] = ['users','Users & Staff','👥']; $nav[] = ['settings','Settings','⚙']; }
     elseif ($role === 'admin_staff') { $nav[] = ['housekeeping','Housekeeping','🧹']; $nav[] = ['tenants','Tenant Profiles','👤']; }
     if ($role === 'resident') {
         $nav = [

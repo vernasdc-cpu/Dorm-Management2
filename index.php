@@ -6,6 +6,7 @@ require_once __DIR__ . '/includes/auth.php';
 require_once __DIR__ . '/includes/layout.php';
 
 $page = $_GET['page'] ?? 'dashboard';
+if ($page === 'audit') $page = 'audit-log';
 
 // Guest-only: login
 if ($page === 'login') {
@@ -14,15 +15,18 @@ if ($page === 'login') {
     if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
         $identifier = trim($_POST['email'] ?? '');
         $pw = $_POST['password'] ?? '';
-        if (!login_allowed($identifier . client_ip())) {
-            $err = 'Too many failed attempts. Please try again in 10 minutes.';
-        } else {
-            try {
-                $st = db()->prepare('SELECT * FROM users WHERE LOWER(email)=LOWER(?) AND deleted_at IS NULL LIMIT 1');
+        $pdo = null;
+        try {
+            $pdo = db();
+            $ip = client_ip();
+            if (!login_allowed($identifier, $ip)) {
+                $err = 'Too many failed attempts. Please try again in 10 minutes.';
+            } else {
+                $st = $pdo->prepare('SELECT * FROM users WHERE LOWER(email)=LOWER(?) AND deleted_at IS NULL LIMIT 1');
                 $st->execute([$identifier]);
                 $u = $st->fetch();
                 if (!$u) {
-                    $st = db()->prepare('SELECT * FROM users WHERE LOWER(name)=LOWER(?) AND deleted_at IS NULL LIMIT 2');
+                    $st = $pdo->prepare('SELECT * FROM users WHERE LOWER(name)=LOWER(?) AND deleted_at IS NULL LIMIT 2');
                     $st->execute([$identifier]);
                     $matches = $st->fetchAll();
                     $u = count($matches) === 1 ? $matches[0] : null;
@@ -30,14 +34,25 @@ if ($page === 'login') {
                 if ($u && $u['status'] === 'active' && password_verify($pw, $u['password_hash'])) {
                     session_regenerate_id(true);
                     $_SESSION['uid'] = (int)$u['id'];
-                    login_register_attempt($identifier . client_ip(), true);
+                    login_register_attempt($identifier, $ip, true);
                     audit_log((int)$u['id'], 'Logged in', 'auth', (string)$u['id']);
-                    if (!empty($_POST['remember'])) { setcookie('remember_email', $u['email'], time()+86400*30, '/'); }
+                    if (!empty($_POST['remember'])) {
+                        setcookie('remember_email', $u['email'], [
+                            'expires' => time() + 86400 * 30,
+                            'path' => '/',
+                            'secure' => APP_ENV === 'production',
+                            'httponly' => true,
+                            'samesite' => 'Lax',
+                        ]);
+                    }
                     redirect('index.php?page=dashboard');
                 }
-                login_register_attempt($identifier . client_ip(), false);
+                login_register_attempt($identifier, $ip, false);
                 $err = 'Invalid username or password.';
-            } catch (Throwable $t) { $err = 'Login service unavailable. Please try again later.'; }
+            }
+        } catch (Throwable $t) {
+            if ($pdo instanceof PDO && $pdo->inTransaction()) $pdo->rollBack();
+            $err = 'Login service unavailable. Please try again later.';
         }
     }
     $remembered = $_COOKIE['remember_email'] ?? '';
@@ -84,12 +99,12 @@ if ($page === 'logout') {
 $user = require_login();
 $titles = [
     'dashboard'=>'Dashboard','rooms'=>'Rooms','allocations'=>'Room Allocation','contracts'=>'Contracts',
-    'contract_monitoring'=>'Contract Monitoring','billing'=>'Billing & Payments','billing_payments'=>'Billing Payments','payment_verification'=>'Payment Verification','billing_corrections'=>'Billing Corrections','tenant_applications'=>'Tenant Applications','violations'=>'Violations','admin_reports'=>'Reports/Maintenance','manage_announcements'=>'Manage Announcements','invoice'=>'Invoice','receipt'=>'Official Receipt',
+    'contract_monitoring'=>'Contract Monitoring','billing'=>'Billing & Payments','billing_payments'=>'Billing Payments','payment_verification'=>'Payment Verification','billing_corrections'=>'Billing Corrections','violations'=>'Violations','admin_reports'=>'Reports/Maintenance','manage_announcements'=>'Manage Announcements','invoice'=>'Invoice','receipt'=>'Official Receipt',
     'inventory'=>'Inventory','repairs'=>'Repair & Maintenance','notifications'=>'Notifications','users'=>'Users & Staff',
     'tenants'=>'Tenant Profiles',
     'tenant_accounts'=>'Tenant Account Users',
     'housekeeping'=>'Housekeeping',
-    'reports'=>'Reports','audit'=>'Audit Logs','settings'=>'System Settings','profile'=>'My Profile',
+    'reports'=>'Reports','audit-log'=>'Audit Logs','settings'=>'System Settings','profile'=>'My Profile',
     'my_room'=>'My Room','my_contract'=>'My Contract','my_billing'=>'My Billing','my_billing_payment'=>'Billing Payment','my_billing_correction'=>'Billing Correction','my_repairs'=>'My Repairs',
     'my_violations'=>'My Violations','my_reports'=>'My Reports','announcements'=>'Announcements',
     'download'=>'Download',
@@ -171,7 +186,6 @@ $allowed = [
     'billing_payments'=>['super_admin','admin_staff'],
     'payment_verification'=>['super_admin','admin_staff'],
     'billing_corrections'=>['super_admin','admin_staff'],
-    'tenant_applications'=>['super_admin','admin_staff'],
     'violations'=>['super_admin','admin_staff'],
     'admin_reports'=>['super_admin','admin_staff'],
     'manage_announcements'=>['super_admin','admin_staff'],
@@ -185,7 +199,7 @@ $allowed = [
     'tenant_accounts'=>['super_admin','admin_staff'],
     'housekeeping'=>['super_admin','admin_staff','housekeeping'],
     'users'=>['super_admin'],
-    'audit'=>['super_admin'],
+    'audit-log'=>['super_admin'],
     'settings'=>['super_admin'],
     'reports'=>['super_admin','admin_staff'],
 ];

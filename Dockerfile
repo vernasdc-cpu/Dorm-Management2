@@ -7,6 +7,8 @@ RUN docker-php-ext-install pdo pdo_mysql mysqli && \
 
 # Apache docroot = /var/www/html ; copy app
 COPY . /var/www/html/
+COPY docker/apache-private.conf /etc/apache2/conf-available/private-references.conf
+RUN a2enconf private-references
 
 # Upload dirs writable
 RUN mkdir -p /var/www/html/uploads/contracts /var/www/html/uploads/repairs /var/www/html/uploads/profiles \
@@ -20,4 +22,3 @@ EXPOSE 80
 
 ENTRYPOINT ["app-entrypoint.sh"]
 CMD ["apache2-foreground"]
-

@@ -27,20 +27,49 @@ function require_roles(array $roles): array {
     return $u;
 }
 
-// Rate limiting for login: max 5 attempts per 10 min per IP+email
-function login_allowed(string $key): bool {
-    $k = 'login_' . md5($key);
-    $a = $_SESSION[$k] ?? ['count'=>0,'first'=>time()];
-    if (time() - $a['first'] > 600) return true;
-    return $a['count'] < 5;
+function login_rate_keys(string $identifier, string $ip): array {
+    $accountKey = hash_hmac('sha256', "account\0" . strtolower(trim($identifier)) . "\0" . $ip, APP_KEY);
+    $ipKey = hash_hmac('sha256', "ip\0" . $ip, APP_KEY);
+    return [$accountKey, $ipKey];
 }
-function login_register_attempt(string $key, bool $success): void {
-    $k = 'login_' . md5($key);
-    $a = $_SESSION[$k] ?? ['count'=>0,'first'=>time()];
-    if (time() - $a['first'] > 600) $a = ['count'=>0,'first'=>time()];
-    if ($success) { unset($_SESSION[$k]); return; }
-    $a['count']++;
-    $_SESSION[$k] = $a;
+
+// Limit to five failures per 10 minutes for both an IP/account pair and the IP.
+function login_allowed(string $identifier, string $ip): bool {
+    [$accountKey, $ipKey] = login_rate_keys($identifier, $ip);
+    $pdo = db();
+    $pdo->exec('DELETE FROM login_rate_limits WHERE window_started_at < DATE_SUB(NOW(), INTERVAL 1 DAY)');
+    $pdo->beginTransaction();
+    $insert = $pdo->prepare('INSERT IGNORE INTO login_rate_limits (rate_key, failed_attempts, window_started_at)
+        VALUES (?, 0, NOW())');
+    $insert->execute([$accountKey]);
+    $insert->execute([$ipKey]);
+    $reset = $pdo->prepare('UPDATE login_rate_limits SET failed_attempts=0, window_started_at=NOW()
+        WHERE rate_key IN (?, ?) AND window_started_at < DATE_SUB(NOW(), INTERVAL 10 MINUTE)');
+    $reset->execute([$accountKey, $ipKey]);
+    $st = $pdo->prepare('SELECT rate_key, failed_attempts, window_started_at FROM login_rate_limits
+        WHERE rate_key IN (?, ?) FOR UPDATE');
+    $st->execute([$accountKey, $ipKey]);
+    $rows = $st->fetchAll();
+    foreach ($rows as $row) {
+        if ((int)$row['failed_attempts'] >= 5) {
+            $pdo->commit();
+            return false;
+        }
+    }
+    return true;
+}
+
+function login_register_attempt(string $identifier, string $ip, bool $success): void {
+    [$accountKey, $ipKey] = login_rate_keys($identifier, $ip);
+    $pdo = db();
+    if ($success) {
+        $st = $pdo->prepare('DELETE FROM login_rate_limits WHERE rate_key=?');
+        $st->execute([$accountKey]);
+    } else {
+        $st = $pdo->prepare('UPDATE login_rate_limits SET failed_attempts=failed_attempts+1 WHERE rate_key IN (?, ?)');
+        $st->execute([$accountKey, $ipKey]);
+    }
+    $pdo->commit();
 }
 
 function permission_matrix(): array {

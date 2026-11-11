@@ -12,3 +12,6 @@ uploads/mail.log
 
 # Preserve upload protection file
 !uploads/.htaccess
+
+# Local-only private reference files; never commit or deploy their contents
+/secret/

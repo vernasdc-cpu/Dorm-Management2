@@ -18,9 +18,17 @@ function envv(string $key, $default = null) {
     return $_ENV[$key] ?? getenv($key) ?: $default;
 }
 
-define('APP_ENV', envv('APP_ENV', 'production'));
+$appEnv = strtolower(trim((string)envv('APP_ENV', 'production')));
+if (!in_array($appEnv, ['production', 'development', 'testing'], true)) {
+    throw new RuntimeException('APP_ENV must be production, development, or testing.');
+}
+define('APP_ENV', $appEnv);
 define('APP_URL', rtrim(envv('APP_URL', ''), '/'));
-define('APP_KEY', envv('APP_KEY', 'change-me'));
+$appKey = (string)envv('APP_KEY', '');
+if (APP_ENV === 'production' && strlen($appKey) < 32) {
+    throw new RuntimeException('APP_KEY must be configured with at least 32 characters in production.');
+}
+define('APP_KEY', $appKey !== '' ? $appKey : 'development-only-key');
 
 define('DB_HOST', envv('DB_HOST', 'localhost'));
 define('DB_PORT', envv('DB_PORT', '3306'));

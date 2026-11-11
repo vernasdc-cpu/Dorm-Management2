@@ -19,7 +19,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
       if ($st->rowCount() !== 1) throw new RuntimeException('This audit log is already deleted or no longer exists.');
       audit_log((int)$user['id'], 'Moved audit log #' . $id . ' to trash', 'audit', (string)$id);
       flash('success', 'Audit log moved to trash. It will be permanently deleted after 7 days unless restored.');
-      redirect('index.php?page=audit&view=trash');
+      redirect('index.php?page=audit-log&view=trash');
     }
 
     if ($action === 'restore') {
@@ -32,7 +32,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
         $deletedAt = $st->fetchColumn();
         if ($deletedAt) {
           flash('restore_expired', 'This audit log was deleted on ' . $deletedAt . '. The 7-day restoration period has ended; it cannot be restored.');
-          redirect('index.php?page=audit&view=trash');
+          redirect('index.php?page=audit-log&view=trash');
         }
         throw new RuntimeException('This audit log no longer exists.');
       }
@@ -49,20 +49,20 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
           throw $t;
         }
         flash('restore_expired', 'This audit log was deleted on ' . $deleted['deleted_at'] . '. The 7-day restoration period has ended; it cannot be restored.');
-        redirect('index.php?page=audit&view=trash');
+        redirect('index.php?page=audit-log&view=trash');
       }
       $st = $pdo->prepare('UPDATE audit_logs SET deleted_at=NULL WHERE id=? AND deleted_at=?');
       $st->execute([$id, $deleted['deleted_at']]);
       if ($st->rowCount() !== 1) throw new RuntimeException('Could not restore this audit log.');
       audit_log((int)$user['id'], 'Restored audit log #' . $id, 'audit', (string)$id);
       flash('success', 'Audit log restored.');
-      redirect('index.php?page=audit');
+      redirect('index.php?page=audit-log');
     }
 
     throw new RuntimeException('Invalid audit log action.');
   } catch (Throwable $t) {
     flash('error', $t->getMessage());
-    redirect('index.php?page=audit&view=' . rawurlencode($view));
+    redirect('index.php?page=audit-log&view=' . rawurlencode($view));
   }
 }
 
@@ -98,7 +98,7 @@ try {
     foreach ($rows as $r) fputcsv($fh, [$r['created_at'], $r['uname'] ?? ('#' . $r['user_id']), $r['uemail'] ?? '', $r['action'], $r['module'], $r['record_id'], $r['ip_address']]);
     rewind($fh); $csv = stream_get_contents($fh); fclose($fh);
     if (!headers_sent()) { header('Content-Type: text/csv'); header('Content-Disposition: attachment; filename="audit-logs.csv"'); echo $csv; exit; }
-    echo '<div class="card"><h3>CSV ready</h3><button class="btn sm" onclick="dlA()">Download CSV</button> <a class="btn sm ghost" href="index.php?page=audit">Back</a><textarea id="abox" rows="12" style="width:100%;margin-top:8px">' . e($csv) . '</textarea></div>';
+    echo '<div class="card"><h3>CSV ready</h3><button class="btn sm" onclick="dlA()">Download CSV</button> <a class="btn sm ghost" href="index.php?page=audit-log">Back</a><textarea id="abox" rows="12" style="width:100%;margin-top:8px">' . e($csv) . '</textarea></div>';
     echo "<script>function dlA(){var b=new Blob([document.getElementById('abox').value],{type:'text/csv'});var a=document.createElement('a');a.href=URL.createObjectURL(b);a.download='audit-logs.csv';a.click();}</script>";
   }
 } catch (Throwable $t) { $rows = []; flash('error', 'Could not load audit logs.'); }
@@ -109,24 +109,24 @@ $restoreExpired = flash('restore_expired');
   <div class="box" style="text-align:center">
     <h3 id="audit-restore-expired-title">Cannot restore audit log</h3>
     <p><?= e($restoreExpired) ?></p>
-    <a class="btn" href="index.php?page=audit&view=trash">OK</a>
+    <a class="btn" href="index.php?page=audit-log&view=trash">OK</a>
   </div>
 </div>
 <?php endif; ?>
 <div class="card"><h3>📜 Audit Logs (latest <?= count($rows) ?> / max 200)</h3>
   <div class="row" style="margin:10px 0">
-    <a class="btn sm <?= $view === 'active' ? '' : 'ghost' ?>" href="index.php?page=audit">Active logs</a>
-    <a class="btn sm <?= $view === 'trash' ? '' : 'ghost' ?>" href="index.php?page=audit&amp;view=trash">Trash</a>
+    <a class="btn sm <?= $view === 'active' ? '' : 'ghost' ?>" href="index.php?page=audit-log">Active logs</a>
+    <a class="btn sm <?= $view === 'trash' ? '' : 'ghost' ?>" href="index.php?page=audit-log&amp;view=trash">Trash</a>
   </div>
   <form method="get" action="index.php" style="display:flex;gap:8px;flex-wrap:wrap">
-    <input type="hidden" name="page" value="audit">
+    <input type="hidden" name="page" value="audit-log">
     <?php if ($view === 'trash'): ?><input type="hidden" name="view" value="trash"><?php endif; ?>
     <select name="module"><option value="">All modules</option>
       <?php foreach ($mods as $m): ?><option value="<?= e($m) ?>" <?= $module === $m ? 'selected' : '' ?>><?= e($m) ?></option><?php endforeach; ?></select>
     <input name="q" placeholder="Search action/user" value="<?= e($search) ?>">
     <input name="date" type="date" value="<?= e($date) ?>">
     <button class="btn sm">Filter</button>
-    <?php if ($view === 'active'): ?><a class="btn sm ghost" href="index.php?page=audit&module=<?= e(urlencode($module)) ?>&q=<?= e(urlencode($search)) ?>&date=<?= e($date) ?>&export=csv">⬇ CSV</a><?php endif; ?>
+    <?php if ($view === 'active'): ?><a class="btn sm ghost" href="index.php?page=audit-log&module=<?= e(urlencode($module)) ?>&q=<?= e(urlencode($search)) ?>&date=<?= e($date) ?>&export=csv">⬇ CSV</a><?php endif; ?>
   </form></div>
 <div class="card"><div style="overflow-x:auto"><table class="tbl">
   <tr><th>User</th><th>Action</th><th>Module</th><th>Record</th><th>IP</th><th>Time</th><?php if ($view === 'trash'): ?><th>Permanent delete</th><?php endif; ?><th>Manage</th></tr>
