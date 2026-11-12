@@ -20,6 +20,9 @@ update the stack from the project directory:
 docker compose --env-file /etc/heart-dorm/production.env up -d --build
 ```
 
+The configured `APP_URL` is passed into the app container and is used in tenant
+welcome emails as the portal link.
+
 The app listens on `127.0.0.1:8080` by default. Put it behind a TLS-enabled
 reverse proxy and forward requests only to that loopback address. Configure
 the proxy to overwrite `X-Forwarded-For` with the connecting client's IP (for

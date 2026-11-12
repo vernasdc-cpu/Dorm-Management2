@@ -19,6 +19,7 @@ services:
         condition: service_healthy
     environment:
       APP_ENV: ${APP_ENV:-production}
+      APP_URL: ${APP_URL:-}
       APP_KEY: ${APP_KEY:?Set APP_KEY in the Compose environment file}
       DB_HOST: ${DB_HOST:-db}
       DB_PORT: 3306

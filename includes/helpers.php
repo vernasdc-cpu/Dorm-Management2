@@ -181,9 +181,6 @@ function tenant_send_account_email(array $profile, ?string $password, ?string &$
     $email = trim((string)($profile['email'] ?? ''));
     $body = "Dear {$name},\r\n\r\nThank you for choosing Heart Ladies Dormitory.\r\n\r\n";
     $body .= "Your tenant portal account is ready.\r\n";
-    if (defined('APP_URL') && APP_URL !== '') {
-        $body .= "Sign in to your tenant portal: " . APP_URL . "\r\n";
-    }
     $body .= "User account: {$email}\r\n";
     if ($password !== null) {
         $body .= "Password: {$password}\r\n";
@@ -195,7 +192,11 @@ function tenant_send_account_email(array $profile, ?string $password, ?string &$
     } elseif (($profile['account_status'] ?? 'active') !== 'active') {
         $body .= "\r\nYour account is currently inactive. Please contact the dormitory administrator for assistance.\r\n";
     }
-    $body .= "\r\nYou can change your password after logging in from My Profile.\r\n\r\nThank you,\r\nHeart Ladies Dormitory";
+    $body .= "\r\nYou can change your password after logging in from My Profile.\r\n";
+    if (defined('APP_URL') && APP_URL !== '') {
+        $body .= "Visit the URL: " . APP_URL . "\r\n";
+    }
+    $body .= "\r\nThank you,\r\nHeart Ladies Dormitory";
 
     return send_app_mail($email, 'Welcome to Heart Ladies Dormitory', $body, $error);
 }
