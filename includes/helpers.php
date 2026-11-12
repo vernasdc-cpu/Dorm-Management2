@@ -181,6 +181,9 @@ function tenant_send_account_email(array $profile, ?string $password, ?string &$
     $email = trim((string)($profile['email'] ?? ''));
     $body = "Dear {$name},\r\n\r\nThank you for choosing Heart Ladies Dormitory.\r\n\r\n";
     $body .= "Your tenant portal account is ready.\r\n";
+    if (defined('APP_URL') && APP_URL !== '') {
+        $body .= "Sign in to your tenant portal: " . APP_URL . "\r\n";
+    }
     $body .= "User account: {$email}\r\n";
     if ($password !== null) {
         $body .= "Password: {$password}\r\n";
