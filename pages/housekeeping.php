@@ -6,6 +6,21 @@ $isSupervisor = in_array($role, ['super_admin', 'admin_staff'], true);
 $canAdd = $role === 'housekeeping';
 $statuses = ['Clean', 'Undone', 'Unclean'];
 $verificationStatuses = ['Verified', 'Awaiting check'];
+$otherChecklistItems = [
+    'kitchen' => 'Kitchen',
+    'comfort_room' => 'Comfort Room',
+    'floor' => 'Floor',
+    'dispose_garbage' => 'Dispose Garbage',
+    'wall_fan' => 'Wall Fan',
+    'exhaust_fan' => 'Exhaust Fan',
+    'admin' => 'Admin',
+    'accounting' => 'Accounting',
+    'conference' => 'Conference',
+    'common_area' => 'Common Area',
+    'stairs' => 'Stairs',
+    'hallway' => 'Hallway',
+    'window' => 'Window',
+];
 $today = date('Y-m-d');
 $month = trim((string)($_GET['month'] ?? date('Y-m')));
 if (!preg_match('/^\d{4}-(0[1-9]|1[0-2])$/', $month)) $month = date('Y-m');
@@ -23,6 +38,8 @@ if (!function_exists('hk_status_class')) {
 $supervisors = [];
 $units = [];
 $rows = [];
+$otherRecords = [];
+$otherColumns = [];
 $stats = ['total' => 0, 'clean_count' => 0, 'undone_count' => 0, 'unclean_count' => 0];
 $err = null;
 
@@ -62,6 +79,43 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             audit_log((int)$user['id'], 'Changed own password', 'housekeeping', (string)$user['id']);
             flash('success', 'Password changed.');
             redirect('index.php?page=housekeeping&month=' . rawurlencode($month));
+        }
+
+        if ($action === 'create_others') {
+            if (!$canAdd) throw new RuntimeException('Only housekeeping staff can submit this checklist.');
+
+            $date = trim((string)($_POST['checklist_date'] ?? ''));
+            $parsedDate = DateTimeImmutable::createFromFormat('!Y-m-d', $date);
+            if (!$parsedDate || $parsedDate->format('Y-m-d') !== $date) {
+                throw new RuntimeException('Please choose a valid checklist date.');
+            }
+
+            $selected = $_POST['checklist_items'] ?? [];
+            if (!is_array($selected)) throw new RuntimeException('Please select valid checklist items.');
+            $selected = array_values(array_unique(array_map('strval', $selected)));
+            if (!$selected) throw new RuntimeException('Select at least one checklist item.');
+            foreach ($selected as $item) {
+                if (!array_key_exists($item, $otherChecklistItems)) {
+                    throw new RuntimeException('Please select valid checklist items.');
+                }
+            }
+
+            $pdo->beginTransaction();
+            try {
+                $st = $pdo->prepare('INSERT INTO housekeeping_other_records (staff_id, checklist_date) VALUES (?,?)');
+                $st->execute([(int)$user['id'], $date]);
+                $recordId = (int)$pdo->lastInsertId();
+                $itemSt = $pdo->prepare('INSERT INTO housekeeping_other_items (record_id, item_key) VALUES (?,?)');
+                foreach ($selected as $item) $itemSt->execute([$recordId, $item]);
+                $pdo->commit();
+            } catch (Throwable $t) {
+                if ($pdo->inTransaction()) $pdo->rollBack();
+                throw $t;
+            }
+
+            audit_log((int)$user['id'], 'Submitted Others housekeeping checklist for ' . $date, 'housekeeping', (string)$recordId);
+            flash('success', 'Others checklist saved.');
+            redirect('index.php?page=housekeeping&month=' . rawurlencode(substr($date, 0, 7)));
         }
 
         if ($action === 'supervisor_update') {
@@ -166,9 +220,41 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
 
         throw new RuntimeException('Invalid cleaning-record action.');
     } catch (Throwable $t) {
+        if ($pdo->inTransaction()) $pdo->rollBack();
         flash('error', $t->getMessage() ?: 'Could not save the cleaning record.');
         redirect('index.php?page=housekeeping&month=' . rawurlencode($month));
     }
+}
+
+try {
+    $st = $pdo->prepare("SELECT r.id, r.checklist_date, r.staff_id, i.item_key
+        FROM housekeeping_other_records r
+        JOIN users staff ON staff.id=r.staff_id
+        LEFT JOIN housekeeping_other_items i ON i.record_id=r.id
+        WHERE r.checklist_date >= ? AND r.checklist_date < DATE_ADD(?, INTERVAL 1 MONTH)
+        ORDER BY r.checklist_date DESC, r.id DESC");
+    $monthStart = $month . '-01';
+    $st->execute([$monthStart, $monthStart]);
+    $otherItemSet = [];
+    foreach ($st->fetchAll() as $itemRow) {
+        $recordId = (int)$itemRow['id'];
+        if (!isset($otherRecords[$recordId])) {
+            $otherRecords[$recordId] = [
+                'id' => $recordId,
+                'checklist_date' => $itemRow['checklist_date'],
+                'staff_id' => (int)$itemRow['staff_id'],
+                'items' => [],
+            ];
+        }
+        if ($itemRow['item_key'] !== null && array_key_exists($itemRow['item_key'], $otherChecklistItems)) {
+            $otherRecords[$recordId]['items'][$itemRow['item_key']] = true;
+            $otherItemSet[$itemRow['item_key']] = true;
+        }
+    }
+    $otherColumns = array_intersect_key($otherChecklistItems, $otherItemSet);
+} catch (Throwable $t) {
+    error_log('housekeeping.php Others checklist load: ' . $t->getMessage());
+    $err = $err ?? 'Could not load Others checklist records. Please run the database migration.';
 }
 
 try {
@@ -197,6 +283,23 @@ try {
 } catch (Throwable $t) {
     error_log('housekeeping.php records load: ' . $t->getMessage());
     $err = $err ?? 'Could not load housekeeping records. Please run the database migration.';
+}
+
+if (($_GET['export'] ?? '') === 'others_csv') {
+    while (ob_get_level() > 0) ob_end_clean();
+    header('Content-Type: text/csv; charset=utf-8');
+    header('Content-Disposition: attachment; filename="housekeeping-others-' . $month . '.csv"');
+    $output = fopen('php://output', 'w');
+    fputcsv($output, array_merge(['Date'], array_values($otherColumns)));
+    foreach ($otherRecords as $record) {
+        $line = [$record['checklist_date']];
+        foreach ($otherColumns as $itemKey => $label) {
+            $line[] = isset($record['items'][$itemKey]) ? 'Yes' : '';
+        }
+        fputcsv($output, $line);
+    }
+    fclose($output);
+    exit;
 }
 
 if (($_GET['export'] ?? '') === 'csv') {
@@ -255,7 +358,27 @@ $errorMessage = flash('error');
     <a class="btn sm ghost" href="index.php?page=housekeeping&amp;month=<?=e($month)?>&amp;export=csv">Export CSV</a>
     <button class="btn sm ghost" type="button" onclick="window.print()">Print</button>
     <?php if ($canAdd): ?><button class="btn sm" type="button" onclick="openModal('hk-create')">+ Add Cleaning Record</button><?php endif; ?>
+    <?php if ($canAdd): ?><button class="btn sm" type="button" onclick="openModal('hk-others')">Others</button><?php endif; ?>
   </div>
+</div>
+
+<div class="card" style="padding:0;overflow:auto">
+  <div class="row between" style="padding:14px 14px 0">
+    <h3 style="margin:0">Others Checklist</h3>
+    <?php if ($otherRecords): ?><a class="btn sm ghost no-print" href="index.php?page=housekeeping&amp;month=<?=e($month)?>&amp;export=others_csv">Export Others CSV</a><?php endif; ?>
+  </div>
+  <table class="tbl">
+    <thead><tr><th>Date</th><?php foreach ($otherColumns as $label): ?><th><?=e($label)?></th><?php endforeach; ?></tr></thead>
+    <tbody>
+      <?php if (!$otherRecords): ?><tr><td colspan="<?=count($otherColumns) + 1?>">No Others checklist records for <?=e(date('F Y', strtotime($month . '-01')))?>.</td></tr><?php endif; ?>
+      <?php foreach ($otherRecords as $record): ?>
+        <tr>
+          <td><?=e(substr((string)$record['checklist_date'], 0, 10))?></td>
+          <?php foreach ($otherColumns as $itemKey => $label): ?><td><?=isset($record['items'][$itemKey]) ? '✓' : ''?></td><?php endforeach; ?>
+        </tr>
+      <?php endforeach; ?>
+    </tbody>
+  </table>
 </div>
 
 <div class="card" style="padding:0;overflow:auto">
@@ -299,6 +422,23 @@ $errorMessage = flash('error');
 </div>
 
 <?php if ($canAdd): ?>
+<div class="modal" id="hk-others" onclick="if(event.target===this)closeModal('hk-others')"><div class="box">
+  <h3>Others Checklist</h3>
+  <form method="post">
+    <?=csrf_field()?><input type="hidden" name="action" value="create_others">
+    <div class="field"><label>Date</label><input type="date" name="checklist_date" value="<?=e($today)?>" required></div>
+    <div class="form-grid">
+      <?php foreach ($otherChecklistItems as $itemKey => $label): ?>
+        <label class="field" style="display:flex;align-items:center;gap:8px">
+          <input type="checkbox" name="checklist_items[]" value="<?=e($itemKey)?>" <?=in_array($itemKey, ['kitchen', 'floor', 'dispose_garbage', 'hallway'], true) ? 'checked' : ''?>>
+          <?=e($label)?>
+        </label>
+      <?php endforeach; ?>
+    </div>
+    <div class="row"><button class="btn sm">Save Checklist</button><button type="button" class="btn sm ghost" onclick="closeModal('hk-others')">Cancel</button></div>
+  </form>
+</div></div>
+
 <div class="modal" id="hk-create" onclick="if(event.target===this)closeModal('hk-create')"><div class="box">
   <h3>Add Cleaning Record</h3>
   <form method="post">

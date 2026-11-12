@@ -10,6 +10,7 @@ $migrations = [
     __DIR__ . '/../database/16-tenant-reports.sql',
     __DIR__ . '/../database/17-tenant-notification-retention.sql',
     __DIR__ . '/../database/18-login-rate-limits.sql',
+    __DIR__ . '/../database/19-housekeeping-others-checklist.sql',
 ];
 
 foreach ($migrations as $sqlFile) {
