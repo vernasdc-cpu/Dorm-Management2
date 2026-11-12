@@ -32,7 +32,6 @@ function layout_header(string $title, array $user): void {
             ['my_violations','My Violations','⚠️'],
             ['my_reports','My Reports','📝'],
             ['announcements','Announcements','📢'],
-            ['my_repairs','My Repairs','🔧'],
             ['notifications','Notifications','🔔'],
         ];
     }

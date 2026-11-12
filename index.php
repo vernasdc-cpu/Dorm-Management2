@@ -193,7 +193,7 @@ $allowed = [
     'receipt'=>['super_admin','admin_staff','resident'],
     'inventory'=>['super_admin','admin_staff','housekeeping'],
     'repairs'=>['super_admin','admin_staff','housekeeping'],
-    'my_room'=>['resident'],'my_contract'=>['resident'],'my_billing'=>['resident'],'my_billing_payment'=>['resident'],'my_billing_correction'=>['resident'],'my_repairs'=>['resident'],
+    'my_room'=>['resident'],'my_contract'=>['resident'],'my_billing'=>['resident'],'my_billing_payment'=>['resident'],'my_billing_correction'=>['resident'],'my_repairs'=>[],
     'my_violations'=>['resident'],'my_reports'=>['resident'],'announcements'=>['resident'],
     'tenants'=>['super_admin','admin_staff'],
     'tenant_accounts'=>['super_admin','admin_staff'],
