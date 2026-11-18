@@ -1,0 +1,11 @@
+USE heart_dorm_db;
+
+CREATE TABLE IF NOT EXISTS bank_references (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  bank_name VARCHAR(150) NOT NULL,
+  account_name VARCHAR(150) NOT NULL,
+  account_number VARCHAR(100) NOT NULL,
+  reference_number VARCHAR(100) NOT NULL,
+  reference_date DATE NOT NULL,
+  imported_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

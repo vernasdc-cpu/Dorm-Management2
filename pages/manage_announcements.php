@@ -34,7 +34,8 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             redirect('index.php?page=manage_announcements');
         }
     } catch (Throwable $t) {
-        flash('error', $t->getMessage());
+        error_log('Could not save announcement: ' . $t->getMessage());
+        flash('error', $t instanceof PDOException ? 'Could not save the announcement. Please contact the administrator.' : $t->getMessage());
         redirect('index.php?page=manage_announcements');
     }
 }
@@ -43,7 +44,8 @@ $anns = [];
 try {
     $anns = $pdo->query("SELECT a.*, u.name as author FROM announcements a LEFT JOIN users u ON u.id = a.author_id ORDER BY a.id DESC")->fetchAll();
 } catch (Throwable $t) {
-    $anns = [];
+    error_log('Could not load announcements: ' . $t->getMessage());
+    $announcementsError = 'Could not load announcements. Please contact the administrator.';
 }
 ?>
 <div class="card" style="margin-bottom:14px">
@@ -67,7 +69,8 @@ try {
   <table class="tbl">
     <thead><tr><th>Title</th><th>Audience</th><th>Published</th><th>Deadline</th><th>Created</th><th>Action</th></tr></thead>
     <tbody>
-    <?php if (!$anns): ?><tr><td colspan="6">No announcements.</td></tr><?php endif; ?>
+    <?php if (!empty($announcementsError)): ?><tr><td colspan="6"><?=e($announcementsError)?></td></tr>
+    <?php elseif (!$anns): ?><tr><td colspan="6">No announcements.</td></tr><?php endif; ?>
     <?php foreach ($anns as $a): ?>
       <tr>
         <td><?=e($a['title'])?></td>

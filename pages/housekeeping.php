@@ -11,19 +11,19 @@ $otherChecklistItems = [
     'comfort_room' => 'Comfort Room',
     'floor' => 'Floor',
     'dispose_garbage' => 'Dispose Garbage',
-    'wall_fan' => 'Wall Fan',
-    'exhaust_fan' => 'Exhaust Fan',
-    'admin' => 'Admin',
-    'accounting' => 'Accounting',
-    'conference' => 'Conference',
     'common_area' => 'Common Area',
     'stairs' => 'Stairs',
     'hallway' => 'Hallway',
     'window' => 'Window',
+    'wall_fan' => 'Wall Fan',
+    'exhaust_fan' => 'Exhaust Fan',
 ];
-$today = date('Y-m-d');
-$month = trim((string)($_GET['month'] ?? date('Y-m')));
-if (!preg_match('/^\d{4}-(0[1-9]|1[0-2])$/', $month)) $month = date('Y-m');
+$unitChecklistItems = ['window', 'wall_fan', 'exhaust_fan'];
+$legacyChecklistItems = ['admin' => 'Admin', 'accounting' => 'Accounting', 'conference' => 'Conference'];
+$checklistToday = (new DateTimeImmutable('now', new DateTimeZone('Asia/Manila')))->format('Y-m-d');
+$currentMonth = substr($checklistToday, 0, 7);
+$month = trim((string)($_GET['month'] ?? $currentMonth));
+if (!preg_match('/^\d{4}-(0[1-9]|1[0-2])$/', $month)) $month = $currentMonth;
 
 if (!function_exists('hk_status_class')) {
     function hk_status_class(string $status): string {
@@ -37,9 +37,11 @@ if (!function_exists('hk_status_class')) {
 
 $supervisors = [];
 $units = [];
+$availableUnits = [];
 $rows = [];
 $otherRecords = [];
 $otherColumns = [];
+$otherLoadError = false;
 $stats = ['total' => 0, 'clean_count' => 0, 'undone_count' => 0, 'unclean_count' => 0];
 $err = null;
 
@@ -49,6 +51,12 @@ try {
         ORDER BY CASE role WHEN 'super_admin' THEN 0 ELSE 1 END, name")->fetchAll();
     $units = $pdo->query("SELECT un.id, un.unit_number, f.name AS floor_name
         FROM units un JOIN floors f ON f.id=un.floor_id ORDER BY un.unit_number, f.name")->fetchAll();
+    if ($canAdd) {
+        $recorded = $pdo->prepare('SELECT DISTINCT unit_id FROM housekeeping_records WHERE staff_id=? AND cleaning_date=? AND unit_id IS NOT NULL');
+        $recorded->execute([(int)$user['id'], $checklistToday]);
+        $recordedUnitIds = array_fill_keys(array_map('intval', $recorded->fetchAll(PDO::FETCH_COLUMN)), true);
+        $availableUnits = array_values(array_filter($units, static fn(array $unit): bool => !isset($recordedUnitIds[(int)$unit['id']])));
+    }
 } catch (Throwable $t) {
     error_log('housekeeping.php options load: ' . $t->getMessage());
     $err = 'Could not load housekeeping form options.';
@@ -81,40 +89,69 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             redirect('index.php?page=housekeeping&month=' . rawurlencode($month));
         }
 
-        if ($action === 'create_others') {
-            if (!$canAdd) throw new RuntimeException('Only housekeeping staff can submit this checklist.');
+        if ($action === 'create_others' || $action === 'update_others') {
+            if (!$canAdd) throw new RuntimeException('Only housekeeping staff can manage this checklist.');
 
-            $date = trim((string)($_POST['checklist_date'] ?? ''));
-            $parsedDate = DateTimeImmutable::createFromFormat('!Y-m-d', $date);
-            if (!$parsedDate || $parsedDate->format('Y-m-d') !== $date) {
-                throw new RuntimeException('Please choose a valid checklist date.');
-            }
-
+            $date = (new DateTimeImmutable('now', new DateTimeZone('Asia/Manila')))->format('Y-m-d');
             $selected = $_POST['checklist_items'] ?? [];
             if (!is_array($selected)) throw new RuntimeException('Please select valid checklist items.');
-            $selected = array_values(array_unique(array_map('strval', $selected)));
-            if (!$selected) throw new RuntimeException('Select at least one checklist item.');
             foreach ($selected as $item) {
-                if (!array_key_exists($item, $otherChecklistItems)) {
+                if (!is_string($item) || !array_key_exists($item, $otherChecklistItems)) {
                     throw new RuntimeException('Please select valid checklist items.');
+                }
+            }
+            $selected = array_values(array_unique($selected));
+            if (!$selected) throw new RuntimeException('Select at least one checklist item.');
+            $itemUnits = [];
+            foreach ($unitChecklistItems as $item) {
+                if (in_array($item, $selected, true)) {
+                    $value = $_POST['unit_' . $item] ?? '';
+                    if (!is_string($value)) throw new RuntimeException('Enter a valid unit for ' . $otherChecklistItems[$item] . '.');
+                    $value = trim($value);
+                    if ($value === '' || mb_strlen($value) > 255) {
+                        throw new RuntimeException('Enter the unit cleaned for ' . $otherChecklistItems[$item] . ' (maximum 255 characters).');
+                    }
+                    $itemUnits[$item] = $value;
                 }
             }
 
             $pdo->beginTransaction();
             try {
-                $st = $pdo->prepare('INSERT INTO housekeeping_other_records (staff_id, checklist_date) VALUES (?,?)');
-                $st->execute([(int)$user['id'], $date]);
-                $recordId = (int)$pdo->lastInsertId();
-                $itemSt = $pdo->prepare('INSERT INTO housekeeping_other_items (record_id, item_key) VALUES (?,?)');
-                foreach ($selected as $item) $itemSt->execute([$recordId, $item]);
+                if ($action === 'create_others') {
+                    try {
+                        $guard = $pdo->prepare('INSERT INTO housekeeping_other_daily_entries (staff_id, checklist_date) VALUES (?,?)');
+                        $guard->execute([(int)$user['id'], $date]);
+                    } catch (PDOException $t) {
+                        if ((int)($t->errorInfo[1] ?? 0) === 1062) {
+                            throw new RuntimeException('You have already submitted an Others checklist today.');
+                        }
+                        throw $t;
+                    }
+                    $st = $pdo->prepare('INSERT INTO housekeeping_other_records (staff_id, checklist_date) VALUES (?,?)');
+                    $st->execute([(int)$user['id'], $date]);
+                    $recordId = (int)$pdo->lastInsertId();
+                } else {
+                    $st = $pdo->prepare('SELECT id, checklist_date FROM housekeeping_other_records WHERE id=? AND staff_id=? FOR UPDATE');
+                    $st->execute([$id, (int)$user['id']]);
+                    $existing = $st->fetch();
+                    if (!$existing) throw new RuntimeException('You can only edit your own Others checklist.');
+                    $recordId = (int)$existing['id'];
+                    $date = (string)$existing['checklist_date'];
+                    $keys = array_keys($otherChecklistItems);
+                    $placeholders = implode(',', array_fill(0, count($keys), '?'));
+                    $delete = $pdo->prepare("DELETE FROM housekeeping_other_items WHERE record_id=? AND item_key IN ($placeholders)");
+                    $delete->execute(array_merge([$recordId], $keys));
+                }
+                $itemSt = $pdo->prepare('INSERT INTO housekeeping_other_items (record_id, item_key, unit_details) VALUES (?,?,?)');
+                foreach ($selected as $item) $itemSt->execute([$recordId, $item, $itemUnits[$item] ?? null]);
                 $pdo->commit();
             } catch (Throwable $t) {
                 if ($pdo->inTransaction()) $pdo->rollBack();
                 throw $t;
             }
 
-            audit_log((int)$user['id'], 'Submitted Others housekeeping checklist for ' . $date, 'housekeeping', (string)$recordId);
-            flash('success', 'Others checklist saved.');
+            audit_log((int)$user['id'], ($action === 'create_others' ? 'Submitted' : 'Updated') . ' Others housekeeping checklist for ' . $date, 'housekeeping', (string)$recordId);
+            flash('success', $action === 'create_others' ? 'Others checklist saved.' : 'Others checklist updated.');
             redirect('index.php?page=housekeeping&month=' . rawurlencode(substr($date, 0, 7)));
         }
 
@@ -145,9 +182,10 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
         if ($action === 'create' || $action === 'update') {
             if (!$canAdd) throw new RuntimeException('You cannot add cleaning records.');
 
+            $pdo->beginTransaction();
             $existing = null;
             if ($action === 'update') {
-                $st = $pdo->prepare('SELECT * FROM housekeeping_records WHERE id=?');
+                $st = $pdo->prepare('SELECT * FROM housekeeping_records WHERE id=? FOR UPDATE');
                 $st->execute([$id]);
                 $existing = $st->fetch();
                 if (!$existing) throw new RuntimeException('Cleaning record not found.');
@@ -168,39 +206,66 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             $supervisorCheck->execute([$supervisorId]);
             if (!$supervisorCheck->fetchColumn()) throw new RuntimeException('Please choose a valid supervisor.');
 
-            $date = trim((string)($_POST['cleaning_date'] ?? ''));
-            $parsedDate = DateTimeImmutable::createFromFormat('!Y-m-d', $date);
-            if (!$parsedDate || $parsedDate->format('Y-m-d') !== $date) {
-                throw new RuntimeException('Please choose a valid cleaning date.');
-            }
+            $date = $action === 'create'
+                ? (new DateTimeImmutable('now', new DateTimeZone('Asia/Manila')))->format('Y-m-d')
+                : substr((string)$existing['cleaning_date'], 0, 10);
 
-            $unitId = (int)($_POST['unit_id'] ?? 0);
+            $unitIds = $action === 'create' ? ($_POST['unit_ids'] ?? []) : [$_POST['unit_id'] ?? ''];
+            if (!is_array($unitIds) || !$unitIds) throw new RuntimeException('Please select at least one unit.');
+            foreach ($unitIds as $unitId) {
+                if (!is_string($unitId) || !ctype_digit($unitId) || (int)$unitId <= 0) {
+                    throw new RuntimeException('Please choose valid units.');
+                }
+            }
+            $unitIds = array_values(array_unique(array_map('intval', $unitIds)));
             $unitCheck = $pdo->prepare('SELECT id, unit_number FROM units WHERE id=?');
-            $unitCheck->execute([$unitId]);
-            $unit = $unitCheck->fetch();
-            if (!$unit) throw new RuntimeException('Please choose a valid unit.');
+            $selectedUnits = [];
+            foreach ($unitIds as $unitId) {
+                $unitCheck->execute([$unitId]);
+                $unit = $unitCheck->fetch();
+                if (!$unit) throw new RuntimeException('Please choose a valid unit.');
+                $selectedUnits[] = $unit;
+            }
 
             $status = (string)($_POST['status'] ?? '');
             if (!in_array($status, $statuses, true)) throw new RuntimeException('Please choose a valid cleaning status.');
+
+            $staffLock = $pdo->prepare('SELECT id FROM users WHERE id=? FOR UPDATE');
+            $staffLock->execute([$staffId]);
+            if (!$staffLock->fetchColumn()) throw new RuntimeException('Housekeeper not found.');
+            $duplicateCheck = $pdo->prepare('SELECT id FROM housekeeping_records WHERE staff_id=? AND cleaning_date=? AND unit_id=? AND id<>? LIMIT 1 FOR UPDATE');
+            foreach ($selectedUnits as $unit) {
+                if ($action === 'update' && (int)$existing['unit_id'] === (int)$unit['id']) continue;
+                $duplicateCheck->execute([$staffId, $date, (int)$unit['id'], $action === 'update' ? $id : 0]);
+                if ($duplicateCheck->fetchColumn()) {
+                    throw new RuntimeException('You already have a cleaning record for unit ' . $unit['unit_number'] . ' on ' . $date . '. Edit the existing record instead.');
+                }
+            }
 
             if ($action === 'create') {
                 $st = $pdo->prepare('INSERT INTO housekeeping_records
                     (staff_id, cleaning_date, unit_id, room_id, unit_number, status, remarks, supervisor_id, verification_status, verified_by, verified_at, created_by)
                     VALUES (?,?,?,NULL,?,?,?,?,?,?,?,?)');
-                $st->execute([$staffId, $date, (int)$unit['id'], $unit['unit_number'], $status,
-                    null, $supervisorId, 'Awaiting check', null, null, (int)$user['id']]);
-                $recordId = (int)$pdo->lastInsertId();
-                audit_log((int)$user['id'], 'Added housekeeping record for unit ' . $unit['unit_number'] . ' (' . $status . ')', 'housekeeping', (string)$recordId);
-                flash('success', 'Cleaning record added for unit ' . $unit['unit_number'] . '.');
+                foreach ($selectedUnits as $unit) {
+                    $st->execute([$staffId, $date, (int)$unit['id'], $unit['unit_number'], $status,
+                        null, $supervisorId, 'Awaiting check', null, null, (int)$user['id']]);
+                    $recordId = (int)$pdo->lastInsertId();
+                    audit_log((int)$user['id'], 'Added housekeeping record for unit ' . $unit['unit_number'] . ' (' . $status . ')', 'housekeeping', (string)$recordId);
+                }
+                $count = count($selectedUnits);
+                $successMessage = $count === 1 ? 'Cleaning record added for unit ' . $selectedUnits[0]['unit_number'] . '.' : $count . ' cleaning records added.';
             } else {
+                $unit = $selectedUnits[0];
                 $st = $pdo->prepare('UPDATE housekeeping_records
-                    SET staff_id=?, cleaning_date=?, unit_id=?, room_id=NULL, unit_number=?, status=?, supervisor_id=?
+                    SET staff_id=?, unit_id=?, room_id=NULL, unit_number=?, status=?, supervisor_id=?
                     WHERE id=?');
-                $st->execute([$staffId, $date, (int)$unit['id'], $unit['unit_number'], $status,
+                $st->execute([$staffId, (int)$unit['id'], $unit['unit_number'], $status,
                     $supervisorId, $id]);
                 audit_log((int)$user['id'], 'Updated housekeeping record #' . $id . ' for unit ' . $unit['unit_number'], 'housekeeping', (string)$id);
-                flash('success', 'Cleaning record updated.');
+                $successMessage = 'Cleaning record updated.';
             }
+            $pdo->commit();
+            flash('success', $successMessage);
             redirect('index.php?page=housekeeping&month=' . rawurlencode(substr($date, 0, 7)));
         }
 
@@ -227,7 +292,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
 }
 
 try {
-    $st = $pdo->prepare("SELECT r.id, r.checklist_date, r.staff_id, i.item_key
+    $st = $pdo->prepare("SELECT r.id, r.checklist_date, r.staff_id, staff.name AS staff_name, i.item_key, i.unit_details
         FROM housekeeping_other_records r
         JOIN users staff ON staff.id=r.staff_id
         LEFT JOIN housekeeping_other_items i ON i.record_id=r.id
@@ -243,17 +308,21 @@ try {
                 'id' => $recordId,
                 'checklist_date' => $itemRow['checklist_date'],
                 'staff_id' => (int)$itemRow['staff_id'],
+                'staff_name' => $itemRow['staff_name'],
                 'items' => [],
             ];
         }
-        if ($itemRow['item_key'] !== null && array_key_exists($itemRow['item_key'], $otherChecklistItems)) {
-            $otherRecords[$recordId]['items'][$itemRow['item_key']] = true;
+        if ($itemRow['item_key'] !== null && array_key_exists($itemRow['item_key'], $otherChecklistItems + $legacyChecklistItems)) {
+            $otherRecords[$recordId]['items'][$itemRow['item_key']] = $itemRow['unit_details'] ?? '';
             $otherItemSet[$itemRow['item_key']] = true;
         }
     }
-    $otherColumns = array_intersect_key($otherChecklistItems, $otherItemSet);
+    $baseItems = array_diff_key($otherChecklistItems, array_flip($unitChecklistItems));
+    $otherColumns = $baseItems + array_intersect_key($legacyChecklistItems, $otherItemSet)
+        + array_intersect_key($otherChecklistItems, array_flip($unitChecklistItems), $otherItemSet);
 } catch (Throwable $t) {
     error_log('housekeeping.php Others checklist load: ' . $t->getMessage());
+    $otherLoadError = true;
     $err = $err ?? 'Could not load Others checklist records. Please run the database migration.';
 }
 
@@ -287,14 +356,23 @@ try {
 
 if (($_GET['export'] ?? '') === 'others_csv') {
     while (ob_get_level() > 0) ob_end_clean();
+    if ($otherLoadError) {
+        http_response_code(500);
+        header('Content-Type: text/plain; charset=utf-8');
+        exit('Could not export Others checklist records. Please try again later.');
+    }
     header('Content-Type: text/csv; charset=utf-8');
     header('Content-Disposition: attachment; filename="housekeeping-others-' . $month . '.csv"');
     $output = fopen('php://output', 'w');
-    fputcsv($output, array_merge(['Date'], array_values($otherColumns)));
+    fputcsv($output, array_merge(['Name', 'Date'], array_values($otherColumns)));
     foreach ($otherRecords as $record) {
-        $line = [$record['checklist_date']];
+        $staffName = (string)$record['staff_name'];
+        if (preg_match('/^[\s]*[=+\-@]/u', $staffName)) $staffName = "'" . $staffName;
+        $line = [$staffName, $record['checklist_date']];
         foreach ($otherColumns as $itemKey => $label) {
-            $line[] = isset($record['items'][$itemKey]) ? 'Yes' : '';
+            $value = array_key_exists($itemKey, $record['items']) ? ($record['items'][$itemKey] !== '' ? $record['items'][$itemKey] : 'Yes') : '';
+            if (preg_match('/^[\s]*[=+\-@]/u', $value)) $value = "'" . $value;
+            $line[] = $value;
         }
         fputcsv($output, $line);
     }
@@ -368,13 +446,15 @@ $errorMessage = flash('error');
     <?php if ($otherRecords): ?><a class="btn sm ghost no-print" href="index.php?page=housekeeping&amp;month=<?=e($month)?>&amp;export=others_csv">Export Others CSV</a><?php endif; ?>
   </div>
   <table class="tbl">
-    <thead><tr><th>Date</th><?php foreach ($otherColumns as $label): ?><th><?=e($label)?></th><?php endforeach; ?></tr></thead>
+    <thead><tr><th>Name</th><th>Date</th><?php foreach ($otherColumns as $label): ?><th><?=e($label)?></th><?php endforeach; ?><?php if ($canAdd): ?><th class="no-print">Actions</th><?php endif; ?></tr></thead>
     <tbody>
-      <?php if (!$otherRecords): ?><tr><td colspan="<?=count($otherColumns) + 1?>">No Others checklist records for <?=e(date('F Y', strtotime($month . '-01')))?>.</td></tr><?php endif; ?>
+      <?php if (!$otherRecords): ?><tr><td colspan="<?=count($otherColumns) + 2 + ($canAdd ? 1 : 0)?>">No Others checklist records for <?=e(date('F Y', strtotime($month . '-01')))?>.</td></tr><?php endif; ?>
       <?php foreach ($otherRecords as $record): ?>
         <tr>
+          <td><?=e($record['staff_name'])?></td>
           <td><?=e(substr((string)$record['checklist_date'], 0, 10))?></td>
-          <?php foreach ($otherColumns as $itemKey => $label): ?><td><?=isset($record['items'][$itemKey]) ? '✓' : ''?></td><?php endforeach; ?>
+          <?php foreach ($otherColumns as $itemKey => $label): ?><td><?=array_key_exists($itemKey, $record['items']) ? e($record['items'][$itemKey] !== '' ? $record['items'][$itemKey] : '✓') : ''?></td><?php endforeach; ?>
+          <?php if ($canAdd): ?><td class="no-print"><?php if ($record['staff_id'] === (int)$user['id']): ?><button class="btn sm ghost" type="button" onclick="openModal('hk-others-edit-<?=(int)$record['id']?>')">Edit</button><?php else: ?>—<?php endif; ?></td><?php endif; ?>
         </tr>
       <?php endforeach; ?>
     </tbody>
@@ -422,22 +502,58 @@ $errorMessage = flash('error');
 </div>
 
 <?php if ($canAdd): ?>
-<div class="modal" id="hk-others" onclick="if(event.target===this)closeModal('hk-others')"><div class="box">
-  <h3>Others Checklist</h3>
-  <form method="post">
-    <?=csrf_field()?><input type="hidden" name="action" value="create_others">
-    <div class="field"><label>Date</label><input type="date" name="checklist_date" value="<?=e($today)?>" required></div>
+<?php
+$otherForms = [['modal' => 'hk-others', 'record' => null]];
+foreach ($otherRecords as $record) {
+    if ($record['staff_id'] === (int)$user['id']) {
+        $otherForms[] = ['modal' => 'hk-others-edit-' . $record['id'], 'record' => $record];
+    }
+}
+foreach ($otherForms as $form):
+    $editing = $form['record'] !== null;
+    $formRecord = $form['record'];
+    $modalId = $form['modal'];
+?>
+<div class="modal" id="<?=e($modalId)?>" onclick="if(event.target===this)closeModal('<?=e($modalId)?>')"><div class="box">
+  <h3><?=$editing ? 'Edit Others Checklist' : 'Others Checklist'?></h3>
+  <form method="post" action="index.php?page=housekeeping&amp;month=<?=e($month)?>">
+    <?=csrf_field()?><input type="hidden" name="action" value="<?=$editing ? 'update_others' : 'create_others'?>">
+    <?php if ($editing): ?><input type="hidden" name="id" value="<?=(int)$formRecord['id']?>"><?php endif; ?>
+    <div class="field"><label>Name</label><input value="<?=e($user['name'])?>" readonly></div>
+    <div class="field"><label>Date (Philippine time)</label><input type="date" value="<?=e($editing ? $formRecord['checklist_date'] : $checklistToday)?>" readonly></div>
+    <p>Only one Others checklist can be submitted per staff member each day.</p>
     <div class="form-grid">
       <?php foreach ($otherChecklistItems as $itemKey => $label): ?>
-        <label class="field" style="display:flex;align-items:center;gap:8px">
-          <input type="checkbox" name="checklist_items[]" value="<?=e($itemKey)?>" <?=in_array($itemKey, ['kitchen', 'floor', 'dispose_garbage', 'hallway'], true) ? 'checked' : ''?>>
-          <?=e($label)?>
-        </label>
+        <?php $unitInputId = $modalId . '-unit-' . $itemKey; ?>
+        <div class="field">
+          <label style="display:flex;align-items:center;gap:8px">
+            <input type="checkbox" style="width:auto" name="checklist_items[]" value="<?=e($itemKey)?>" <?=($editing ? array_key_exists($itemKey, $formRecord['items']) : in_array($itemKey, ['kitchen', 'floor', 'dispose_garbage', 'hallway'], true)) ? 'checked' : ''?><?php if (in_array($itemKey, $unitChecklistItems, true)): ?> data-unit-checkbox="<?=e($unitInputId)?>"<?php endif; ?>>
+            <?=e($label)?>
+          </label>
+          <?php if (in_array($itemKey, $unitChecklistItems, true)): ?>
+            <label for="<?=e($unitInputId)?>" hidden>Unit cleaned</label>
+            <input class="hk-unit-input" id="<?=e($unitInputId)?>" name="unit_<?=e($itemKey)?>" value="<?=e($editing ? ($formRecord['items'][$itemKey] ?? '') : '')?>" maxlength="255" placeholder="Enter unit" disabled hidden>
+          <?php endif; ?>
+        </div>
       <?php endforeach; ?>
     </div>
-    <div class="row"><button class="btn sm">Save Checklist</button><button type="button" class="btn sm ghost" onclick="closeModal('hk-others')">Cancel</button></div>
+    <div class="row"><button class="btn sm">Save Checklist</button><button type="button" class="btn sm ghost" onclick="closeModal('<?=e($modalId)?>')">Cancel</button></div>
   </form>
 </div></div>
+<?php endforeach; ?>
+<script>
+document.querySelectorAll('[data-unit-checkbox]').forEach(function (checkbox) {
+  var unit = document.getElementById(checkbox.dataset.unitCheckbox);
+  function updateUnit() {
+    unit.disabled = !checkbox.checked;
+    unit.required = checkbox.checked;
+    unit.parentElement.querySelector('label[for]').hidden = !checkbox.checked;
+    unit.hidden = !checkbox.checked;
+  }
+  checkbox.addEventListener('change', updateUnit);
+  updateUnit();
+});
+</script>
 
 <div class="modal" id="hk-create" onclick="if(event.target===this)closeModal('hk-create')"><div class="box">
   <h3>Add Cleaning Record</h3>
@@ -445,10 +561,19 @@ $errorMessage = flash('error');
     <?=csrf_field()?><input type="hidden" name="action" value="create">
     <div class="form-grid">
       <div class="field"><label>Name</label><input value="<?=e($user['name'])?>" readonly></div>
-      <div class="field"><label>Date</label><input type="date" name="cleaning_date" value="<?=e($today)?>" required></div>
-      <div class="field"><label>Unit</label><select name="unit_id" required><option value="">Select unit</option>
-        <?php foreach ($units as $unit): ?><option value="<?=(int)$unit['id']?>">Unit <?=e($unit['unit_number'])?> · <?=e($unit['floor_name'])?></option><?php endforeach; ?>
-      </select></div>
+      <div class="field"><label>Date (Philippine time)</label><input type="date" value="<?=e($checklistToday)?>" readonly></div>
+      <div class="field"><label id="hk-units-label">Units</label>
+        <details class="hk-unit-dropdown">
+          <summary>Select units</summary>
+          <div class="hk-unit-list">
+            <?php foreach ($availableUnits as $unit): ?>
+              <label><input type="checkbox" name="unit_ids[]" value="<?=(int)$unit['id']?>"> Unit <?=e($unit['unit_number'])?> · <?=e($unit['floor_name'])?></label>
+            <?php endforeach; ?>
+            <?php if (!$availableUnits): ?><span>No units available for you today.</span><?php endif; ?>
+          </div>
+        </details>
+        <small>Select one or more units. Units you already recorded today are hidden; edit an existing record to update it.</small>
+      </div>
       <div class="field"><label>Status</label><select name="status" required>
         <?php foreach ($statuses as $status): ?><option value="<?=e($status)?>" <?=$status === 'Undone' ? 'selected' : ''?>><?=e($status)?></option><?php endforeach; ?>
       </select></div>
@@ -459,6 +584,18 @@ $errorMessage = flash('error');
     <div class="row"><button class="btn sm">Save</button><button type="button" class="btn sm ghost" onclick="closeModal('hk-create')">Cancel</button></div>
   </form>
 </div></div>
+<script>
+document.querySelectorAll('#hk-create .hk-unit-dropdown').forEach(function (dropdown) {
+  var summary = dropdown.querySelector('summary');
+  var boxes = dropdown.querySelectorAll('input[name="unit_ids[]"]');
+  function updateSummary() {
+    var count = Array.from(boxes).filter(function (box) { return box.checked; }).length;
+    summary.textContent = count ? count + (count === 1 ? ' unit selected' : ' units selected') : 'Select units';
+  }
+  boxes.forEach(function (box) { box.addEventListener('change', updateSummary); });
+  updateSummary();
+});
+</script>
 <?php endif; ?>
 
 <?php foreach ($rows as $record):
@@ -473,7 +610,7 @@ $errorMessage = flash('error');
     <?=csrf_field()?><input type="hidden" name="action" value="update"><input type="hidden" name="id" value="<?=(int)$record['id']?>">
     <div class="form-grid">
       <div class="field"><label>Name</label><input value="<?=e($record['staff_name'])?>" readonly></div>
-      <div class="field"><label>Date</label><input type="date" name="cleaning_date" value="<?=e(substr((string)$record['cleaning_date'], 0, 10))?>" required></div>
+      <div class="field"><label>Date</label><input type="date" value="<?=e(substr((string)$record['cleaning_date'], 0, 10))?>" readonly></div>
       <div class="field"><label>Unit</label><select name="unit_id" required>
         <?php foreach ($units as $unit): ?><option value="<?=(int)$unit['id']?>" <?=(int)$record['unit_id'] === (int)$unit['id'] ? 'selected' : ''?>>Unit <?=e($unit['unit_number'])?> · <?=e($unit['floor_name'])?></option><?php endforeach; ?>
       </select></div>
@@ -505,6 +642,13 @@ $errorMessage = flash('error');
 <?php endforeach; endif; ?>
 
 <style>
+.hk-unit-dropdown { border:1px solid #6b7280; border-radius:6px; background:#fff; }
+.hk-unit-dropdown summary { cursor:pointer; padding:9px 10px; }
+.hk-unit-list { max-height:180px; overflow-y:auto; padding:4px 10px 10px; }
+.hk-unit-list label { display:flex; align-items:center; gap:8px; padding:4px 0; }
+.field .hk-unit-list input[type="checkbox"] { width:auto; margin:0; }
+.field input.hk-unit-input { border:2px solid #374151; color:#111827; }
+.field input.hk-unit-input::placeholder { color:#4b5563; opacity:1; }
 @media print {
   .no-print, .modal, .sidebar, .topbar, .footer { display:none !important; }
   .content, .card { max-width:none !important; box-shadow:none !important; }

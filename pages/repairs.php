@@ -100,8 +100,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             if (!$rep) throw new RuntimeException('Repair request not found.');
             db()->prepare('DELETE FROM repair_requests WHERE id=?')->execute([$id]);
             if (!empty($rep['photo_path'])) {
-                $f = __DIR__ . '/../uploads/repairs/' . basename($rep['photo_path']);
-                if (is_file($f)) @unlink($f);
+                tenant_file_remove((string)$rep['photo_path'], __DIR__ . '/../uploads/repairs');
             }
             audit_log((int)$user['id'], 'Deleted repair request', 'repairs', $rep['report_id']);
             flash('success', 'Repair request deleted successfully.');
@@ -234,8 +233,8 @@ $qs = fn(array $over = []) => 'index.php?page=repairs&' . http_build_query(array
        <span class="pill <?= repair_status_class($r['status']) ?>"><?= e($r['status']) ?></span></p>
     <p><?= nl2br(e($r['description'])) ?></p>
     <?php if (!empty($r['photo_path'])): ?>
-      <p><a href="uploads/repairs/<?= e(basename($r['photo_path'])) ?>" target="_blank" rel="noopener">
-        <img src="uploads/repairs/<?= e(basename($r['photo_path'])) ?>" alt="Repair photo" style="max-width:100%;border-radius:10px;border:1px solid #efdff5"></a></p>
+      <p><a href="index.php?page=download&amp;type=repair_photo&amp;id=<?=(int)$r['id']?>" target="_blank" rel="noopener">
+        <img src="index.php?page=download&amp;type=repair_photo&amp;id=<?=(int)$r['id']?>" alt="Repair photo" style="max-width:100%;border-radius:10px;border:1px solid #efdff5"></a></p>
     <?php endif; ?>
     <?php if (!empty($r['resolution_notes'])): ?><p><strong>Resolution:</strong> <?= nl2br(e($r['resolution_notes'])) ?></p><?php endif; ?>
     <?php if (!empty($r['date_resolved'])): ?><p style="font-size:13px;color:#7c6f8a">Resolved: <?= e(substr((string)$r['date_resolved'], 0, 16)) ?></p><?php endif; ?>

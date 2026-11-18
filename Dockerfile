@@ -1,9 +1,15 @@
 FROM php:8.2-apache
 
-# Install PHP extensions for MySQL + uploads
-RUN docker-php-ext-install pdo pdo_mysql mysqli && \
-    a2enmod rewrite headers && \
-    apt-get update && apt-get install -y default-mysql-client && rm -rf /var/lib/apt/lists/*
+COPY --from=composer:2 /usr/bin/composer /usr/local/bin/composer
+RUN apt-get update && apt-get install -y default-mysql-client libzip-dev libpng-dev libjpeg-dev libwebp-dev && \
+    docker-php-ext-configure gd --with-jpeg --with-webp && \
+    docker-php-ext-install pdo pdo_mysql mysqli zip gd && \
+    a2enmod rewrite headers && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /opt/dorm-dependencies
+COPY composer.json composer.lock ./
+RUN composer install --no-dev --no-interaction --prefer-dist --no-progress --optimize-autoloader
+WORKDIR /var/www/html
 
 # Apache docroot = /var/www/html ; copy app
 COPY . /var/www/html/

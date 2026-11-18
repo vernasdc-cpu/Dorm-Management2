@@ -1,4 +1,10 @@
 /.env
 /.env.*
 /.git/
+/.vs/
+/.vscode/
 /secret/
+/vendor/
+/uploads/*
+!/uploads/.htaccess
+/PROJECT OWNERSHIP INFORMATION.txt

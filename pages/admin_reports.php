@@ -57,7 +57,7 @@ try {
         <td><?=e($r['subject'])?></td>
         <td><?=nl2br(e(mb_substr($r['description'],0,80)))?><?=mb_strlen($r['description'])>80?'...':''?></td>
         <td><?=e($r['status'])?></td>
-        <td><?php if(!empty($r['attachment_path'])): ?><a class="btn ghost sm" href="uploads/reports/<?=e(basename($r['attachment_path']))?>" target="_blank">View</a><?php endif; ?></td>
+        <td><?php if(!empty($r['attachment_path'])): ?><a class="btn ghost sm" href="index.php?page=download&amp;type=report_attachment&amp;id=<?=(int)$r['id']?>" target="_blank">View</a><?php endif; ?></td>
         <td><?= $r['staff_response'] ? nl2br(e($r['staff_response'])) : '—' ?></td>
         <td>
           <form method="post">

@@ -43,7 +43,7 @@ professional web application** that works on desktop, laptop, tablet, and mobile
    and open repairs — plus charts for occupancy, income, payments, repairs, and inventory.
 
 **First-day setup order:** Settings → Users & Staff → Rooms → Residents → Allocations →
-Contracts → Billing. Each step is detailed below.
+Tenant Files → Billing. Each step is detailed below.
 
 ---
 
@@ -76,12 +76,13 @@ any payment recorded yesterday.
 - Mark rooms **Under Maintenance** to block bookings until repairs finish.
 
 ### 4.3 Room Allocation (`Room Allocation`)
-- **Assign** residents to vacant beds — full rooms are rejected automatically
-  ("Room is already fully occupied.").
-- **Transfer** residents between rooms, **Vacate** on move-out, **Reserve** beds for incoming residents.
+- Review room occupancy and reserved bed counts; add or move tenants through
+  Tenant Profiles and create reservations through Reservations.
+- **Transfer** or **Vacate** existing resident allocations from their list.
+- Housekeeping can view Room Allocation but cannot change allocations or history.
 - The **history table** shows every move for accountability.
 
-### 4.4 Contracts (`Contracts` + `Contract Monitoring`)
+### 4.4 Tenant Files and Contracts (`Tenant Files` + `Contract Monitoring`)
 - Create contracts (number, resident, room, dates, rate, terms) and **upload** the signed file
   (PDF/DOC/JPG/PNG, max 5 MB). Replace, download, or archive anytime.
 - Statuses compute automatically: Draft · Pending · Active · **Expiring Soon** · Expired · Terminated.

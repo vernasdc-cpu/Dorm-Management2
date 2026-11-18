@@ -52,4 +52,37 @@ try {
 <div class="card"><h3>My dorm details</h3>
   <p>Room: <b><?= e($me['room_number'] ?? '—') ?></b> · Bed: <b><?= e($me['bed_no'] ?? '—') ?></b> · Move-in: <b><?= e($me['move_in_date'] ?? '—') ?></b></p>
   <p>Address: <?= e($me['address'] ?? '—') ?> · Emergency: <?= e($me['emergency_contact'] ?? '—') ?> (<?= e($me['emergency_phone'] ?? '—') ?>)</p></div>
+<?php
+try {
+    $st = db()->prepare('SELECT id FROM tenant_acknowledgment_receipts WHERE tenant_profile_id=?');
+    $st->execute([(int)($user['tenant_profile_id'] ?? 0)]);
+    $acknowledgmentId = $st->fetchColumn();
+    $st = db()->prepare("SELECT id, received_at, amount FROM reservations WHERE tenant_profile_id=? AND status='Converted' ORDER BY id DESC");
+    $st->execute([(int)($user['tenant_profile_id'] ?? 0)]);
+    $reservationReceipts = $st->fetchAll();
+    $st = db()->prepare("SELECT p.id, p.received_at, p.is_full_summary, CASE WHEN p.is_full_summary=1 THEN r.amount + p.amount ELSE p.amount END AS amount FROM reservation_additional_payments p JOIN reservations r ON r.id=p.reservation_id WHERE r.tenant_profile_id=? AND r.status='Converted' ORDER BY p.id DESC");
+    $st->execute([(int)($user['tenant_profile_id'] ?? 0)]);
+    $additionalReceipts = $st->fetchAll();
+} catch (Throwable $t) {
+    error_log('Could not load tenant acknowledgment receipt: ' . $t->getMessage());
+    $acknowledgmentId = false;
+    $reservationReceipts = [];
+    $additionalReceipts = [];
+    echo '<div class="alert error">Could not load your acknowledgment receipt. Please contact the administrator.</div>';
+}
+?>
+<div class="card"><h3>Acknowledgment Receipt</h3>
+  <?php if ($acknowledgmentId): ?>
+    <a class="btn sm ghost" href="index.php?page=acknowledgment_receipt&id=<?=(int)$acknowledgmentId?>">View / Print Receipt</a>
+  <?php endif; ?>
+  <?php foreach ($reservationReceipts as $reservationReceipt): ?>
+    <p><a class="btn sm ghost" href="index.php?page=acknowledgment_receipt&amp;type=reservation&amp;id=<?=(int)$reservationReceipt['id']?>">View / Print Reservation Receipt</a> <?=e(substr((string)$reservationReceipt['received_at'], 0, 10))?> · <?=money($reservationReceipt['amount'])?></p>
+  <?php endforeach; ?>
+  <?php foreach ($additionalReceipts as $additionalReceipt): ?>
+    <p><a class="btn sm ghost" href="index.php?page=acknowledgment_receipt&amp;type=reservation_payment&amp;id=<?=(int)$additionalReceipt['id']?>">View / Print <?=!empty($additionalReceipt['is_full_summary']) ? 'Full' : 'Additional'?> Payment Receipt</a> <?=e(substr((string)$additionalReceipt['received_at'], 0, 10))?> · <?=money($additionalReceipt['amount'])?></p>
+  <?php endforeach; ?>
+  <?php if (!$acknowledgmentId && !$reservationReceipts && !$additionalReceipts): ?>
+    <p>No acknowledgment receipt is available for this account.</p>
+  <?php endif; ?>
+</div>
 <?php endif; ?>

@@ -32,10 +32,13 @@ function contract_upload_files(?array $input): array {
 
 $saveContractDocuments = static function (int $contractId, array $files) use ($pdo, $user): array {
     $storedFiles = [];
+    $profileSt = $pdo->prepare('SELECT COALESCE(c.tenant_profile_id, u.tenant_profile_id) FROM contracts c LEFT JOIN residents r ON r.residents_id=c.resident_id LEFT JOIN users u ON u.id=r.user_id WHERE c.id=?');
+    $profileSt->execute([$contractId]);
+    $profileId = (int)$profileSt->fetchColumn();
     $ins = $pdo->prepare('INSERT INTO contract_documents (contract_id, file_name, file_path, file_type, file_size, uploaded_by) VALUES (?,?,?,?,?,?)');
     try {
         foreach ($files as $file) {
-            $stored = safe_store_upload($file, __DIR__ . '/../uploads/contracts');
+            $stored = $profileId ? tenant_file_store_upload($pdo, $profileId, 'Contracts', $file) : safe_store_upload($file, __DIR__ . '/../uploads/contracts');
             $storedFiles[] = $stored;
             $ins->execute([
                 $contractId,
@@ -48,8 +51,7 @@ $saveContractDocuments = static function (int $contractId, array $files) use ($p
         }
     } catch (Throwable $t) {
         foreach ($storedFiles as $stored) {
-            $path = __DIR__ . '/../uploads/contracts/' . basename($stored);
-            if (is_file($path)) unlink($path);
+            tenant_file_remove($stored, __DIR__ . '/../uploads/contracts');
         }
         throw $t;
     }
@@ -94,8 +96,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             } catch (Throwable $t) {
                 if ($pdo->inTransaction()) $pdo->rollBack();
                 foreach ($storedFiles as $stored) {
-                    $path = __DIR__ . '/../uploads/contracts/' . basename($stored);
-                    if (is_file($path)) unlink($path);
+                    tenant_file_remove($stored, __DIR__ . '/../uploads/contracts');
                 }
                 throw $t;
             }
@@ -156,8 +157,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             } catch (Throwable $t) {
                 if ($pdo->inTransaction()) $pdo->rollBack();
                 foreach ($storedFiles as $stored) {
-                    $path = __DIR__ . '/../uploads/contracts/' . basename($stored);
-                    if (is_file($path)) unlink($path);
+                    tenant_file_remove($stored, __DIR__ . '/../uploads/contracts');
                 }
                 throw $t;
             }
@@ -253,6 +253,15 @@ try {
     $rooms = $pdo->query('SELECT id, room_number, monthly_rate FROM rooms ORDER BY room_number')->fetchAll();
 } catch (Throwable $t) { $residents = []; $rooms = []; }
 
+$billingDocuments = [];
+$billingDocumentsError = null;
+try {
+    $billingDocuments = $pdo->query('SELECT d.id, d.created_at, s.full_name, s.unit_number, s.amount_paid, b.invoice_number FROM approved_billing_documents d JOIN tenant_billing_payments s ON s.id=d.submission_id LEFT JOIN bills b ON b.id=d.bill_id ORDER BY d.id DESC')->fetchAll();
+} catch (Throwable $t) {
+    error_log('Could not load approved billing documents: ' . $t->getMessage());
+    $billingDocumentsError = 'Could not load approved billing documents. Please check database migrations.';
+}
+
 function pill_class(string $s): string {
     return match($s) {
         'Active' => 'ok',
@@ -289,6 +298,7 @@ function pill_class(string $s): string {
     <button class="btn sm ghost" type="submit">Filter</button>
     <a class="btn sm ghost" href="index.php?page=contracts">Reset</a>
   </form>
+  <a class="btn sm ghost" href="index.php?page=tenant_folders">Profile folder</a>
   <button class="btn sm" onclick="openModal('mCreate')">+ New Contract</button>
 </div>
 
@@ -298,7 +308,7 @@ function pill_class(string $s): string {
   <tbody>
   <?php if (!$filtered): ?><tr><td colspan="9">No contracts found.</td></tr><?php endif; ?>
   <?php foreach ($filtered as $c): ?>
-    <tr>
+    <tr id="contract-<?=(int)$c['id']?>">
       <td><strong><?=e($c['contract_number'])?></strong></td>
       <td><?=e($c['tenant_name'] ?? '—')?><?php if (!empty($c['tenant_profile_id'])): ?><br><small style="color:#7c6f8a">Tenant profile</small><?php endif; ?></td>
       <td><?=e($c['room_number'])?></td>
@@ -333,6 +343,23 @@ function pill_class(string $s): string {
   <?php endforeach; ?>
   </tbody>
 </table>
+</div>
+
+<div class="card">
+  <h3>Approved Billing Documents</h3>
+  <?php if ($billingDocumentsError): ?><div class="alert error"><?=e($billingDocumentsError)?></div><?php endif; ?>
+  <div style="overflow-x:auto"><table class="tbl">
+    <thead><tr><th>Tenant</th><th>Unit</th><th>Invoice</th><th>Payment</th><th>Approved</th><th>Documents</th></tr></thead>
+    <tbody>
+    <?php if (!$billingDocuments && !$billingDocumentsError): ?><tr><td colspan="6">No approved billing documents.</td></tr><?php endif; ?>
+    <?php foreach ($billingDocuments as $document): ?>
+      <tr><td><?=e($document['full_name'])?></td><td><?=e($document['unit_number'])?></td><td><?=e($document['invoice_number'] ?? 'Archived invoice')?></td><td><?=money($document['amount_paid'])?></td><td><?=e(substr((string)$document['created_at'], 0, 10))?></td><td>
+        <a class="btn sm ghost" href="index.php?page=download&amp;type=approved_invoice&amp;id=<?=(int)$document['id']?>" target="_blank">Invoice PDF</a>
+        <a class="btn sm ghost" href="index.php?page=download&amp;type=approved_proof&amp;id=<?=(int)$document['id']?>" target="_blank">Screenshot JPG</a>
+      </td></tr>
+    <?php endforeach; ?>
+    </tbody>
+  </table></div>
 </div>
 
 <!-- Create modal -->

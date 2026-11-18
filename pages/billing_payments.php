@@ -20,26 +20,22 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
         if (!$sub) throw new RuntimeException('Submission not found.');
 
         if ($action === 'approve') {
-            $note = trim((string)($_POST['review_note'] ?? ''));
-            $pdo->prepare("UPDATE tenant_billing_payments SET status='Approved', reviewed_by=?, reviewed_at=NOW(), review_note=? WHERE id=?")
-                ->execute([(int)$user['id'], $note ?: null, $id]);
-
-            audit_log((int)$user['id'], "Approved billing payment #$id", 'billing', (string)$id);
-            flash('success', 'Billing payment approved.');
-            redirect('index.php?page=billing_payments');
+            redirect('index.php?page=approve_billing_payment&id=' . $id);
         } elseif ($action === 'reject') {
             $note = trim((string)($_POST['review_note'] ?? ''));
             if ($note === '') throw new RuntimeException('Please provide a note for rejection.');
-            $pdo->prepare("UPDATE tenant_billing_payments SET status='Rejected', reviewed_by=?, reviewed_at=NOW(), review_note=? WHERE id=?")
-                ->execute([(int)$user['id'], $note, $id]);
+            $update = $pdo->prepare("UPDATE tenant_billing_payments SET status='Rejected', reviewed_by=?, reviewed_at=NOW(), review_note=? WHERE id=? AND status IN ('Pending','Edit Requested')");
+            $update->execute([(int)$user['id'], $note, $id]);
+            if ($update->rowCount() !== 1) throw new RuntimeException('This submission is no longer pending review.');
             audit_log((int)$user['id'], "Rejected billing payment #$id", 'billing', (string)$id);
             flash('success', 'Billing payment rejected.');
             redirect('index.php?page=billing_payments');
         } elseif ($action === 'request_edit') {
             $note = trim((string)($_POST['review_note'] ?? ''));
             if ($note === '') throw new RuntimeException('Please provide a note for edit request.');
-            $pdo->prepare("UPDATE tenant_billing_payments SET status='Edit Requested', edit_request_note=?, edit_requested_by=?, edit_requested_at=NOW(), reviewed_by=?, reviewed_at=NOW(), review_note=? WHERE id=?")
-                ->execute([$note, (int)$user['id'], (int)$user['id'], $note, $id]);
+            $update = $pdo->prepare("UPDATE tenant_billing_payments SET status='Edit Requested', edit_request_note=?, edit_requested_by=?, edit_requested_at=NOW(), reviewed_by=?, reviewed_at=NOW(), review_note=? WHERE id=? AND status='Pending'");
+            $update->execute([$note, (int)$user['id'], (int)$user['id'], $note, $id]);
+            if ($update->rowCount() !== 1) throw new RuntimeException('This submission is no longer pending review.');
             audit_log((int)$user['id'], "Requested edit for billing payment #$id", 'billing', (string)$id);
             flash('success', 'Edit requested from tenant.');
             redirect('index.php?page=billing_payments');
@@ -98,12 +94,9 @@ try {
         </td>
         <td style="white-space:nowrap">
           <?php if ($s['status'] !== 'Approved'): ?>
-            <form method="post" style="display:inline">
-              <?=csrf_field()?><input type="hidden" name="action" value="approve"><input type="hidden" name="id" value="<?=(int)$s['id']?>">
-              <button class="btn sm">Approve</button>
-            </form>
+            <a class="btn sm" href="index.php?page=approve_billing_payment&amp;id=<?=(int)$s['id']?>">Approve</a>
           <?php endif; ?>
-          <?php if ($s['status'] !== 'Rejected'): ?>
+          <?php if (in_array($s['status'], ['Pending', 'Edit Requested'], true)): ?>
             <form method="post" style="display:inline" onsubmit="return confirm('Reject this submission?')">
               <?=csrf_field()?><input type="hidden" name="action" value="reject"><input type="hidden" name="id" value="<?=(int)$s['id']?>">
               <input type="text" name="review_note" placeholder="Reason" required style="width:120px">

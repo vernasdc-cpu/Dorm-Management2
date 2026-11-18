@@ -85,22 +85,29 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             if (!empty($_FILES['screenshot']) && (($_FILES['screenshot']['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_NO_FILE)) {
                 $err = validate_upload($_FILES['screenshot'], ['jpg', 'jpeg', 'png', 'webp'], 5);
                 if ($err) throw new RuntimeException('Screenshot upload failed: ' . $err);
-                $screenshotPath = safe_store_upload($_FILES['screenshot'], __DIR__ . '/../uploads/billing');
+                $screenshotPath = $tenantProfile
+                    ? tenant_file_store_upload($pdo, (int)$tenantProfile['id'], 'Payments', $_FILES['screenshot'])
+                    : safe_store_upload($_FILES['screenshot'], __DIR__ . '/../uploads/billing');
             } else {
                 throw new RuntimeException('Please upload a billing screenshot.');
             }
             
             $ins = $pdo->prepare('INSERT INTO tenant_billing_payments (tenant_profile_id, resident_id, user_id, full_name, email, phone, unit_number, room_id, unit_room_price, electricity, water, others_fee_type, others_fee_label, others_fee_amount, total_price, payment_type, amount_paid, date_of_payment, screenshot_path) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
-            $ins->execute([
-                $tenantProfile ? (int)$tenantProfile['id'] : null,
-                $me ? (int)$me['residents_id'] : null,
-                (int)$user['id'],
-                $fullName, $email ?: null, $phone ?: null, $unitNumber,
-                $room ? (int)$room['id'] : (!empty($tenantProfile['room_id']) ? (int)$tenantProfile['room_id'] : null),
-                $unitRoomPrice, $electricity, $water,
-                $othersFeeType, $othersFeeLabel, $othersFeeAmount,
-                $totalPrice, $paymentType, $amountPaid, $dateOfPayment, $screenshotPath
-            ]);
+            try {
+                $ins->execute([
+                    $tenantProfile ? (int)$tenantProfile['id'] : null,
+                    $me ? (int)$me['residents_id'] : null,
+                    (int)$user['id'],
+                    $fullName, $email ?: null, $phone ?: null, $unitNumber,
+                    $room ? (int)$room['id'] : (!empty($tenantProfile['room_id']) ? (int)$tenantProfile['room_id'] : null),
+                    $unitRoomPrice, $electricity, $water,
+                    $othersFeeType, $othersFeeLabel, $othersFeeAmount,
+                    $totalPrice, $paymentType, $amountPaid, $dateOfPayment, $screenshotPath
+                ]);
+            } catch (Throwable $t) {
+                tenant_file_remove($screenshotPath, __DIR__ . '/../uploads/billing');
+                throw $t;
+            }
             
             audit_log((int)$user['id'], 'Submitted billing payment proof', 'billing', (string)$pdo->lastInsertId());
             flash('success', 'Billing payment submitted successfully. Awaiting review.');
@@ -118,8 +125,9 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             if ($sub['status'] !== 'Pending' && $sub['status'] !== 'Rejected') {
                 throw new RuntimeException('You can only request edit for pending or rejected submissions.');
             }
-            $pdo->prepare("UPDATE tenant_billing_payments SET status='Edit Requested', edit_request_note=?, edit_requested_by=?, edit_requested_at=NOW() WHERE id=?")
-                ->execute([$note ?: null, (int)$user['id'], $subId]);
+            $update = $pdo->prepare("UPDATE tenant_billing_payments SET status='Edit Requested', edit_request_note=?, edit_requested_by=?, edit_requested_at=NOW() WHERE id=? AND user_id=? AND status IN ('Pending','Rejected')");
+            $update->execute([$note ?: null, (int)$user['id'], $subId, (int)$user['id']]);
+            if ($update->rowCount() !== 1) throw new RuntimeException('This submission is no longer available for an edit request.');
             flash('success', 'Edit request sent to Super Admin.');
             redirect('index.php?page=my_billing_payment');
         }
@@ -130,12 +138,16 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
 }
 
 $subs = [];
+$submissionsError = false;
 try {
-    $sst = $pdo->prepare('SELECT * FROM tenant_billing_payments WHERE user_id = ? ORDER BY id DESC');
+    $sst = $pdo->prepare('SELECT s.*, d.id AS document_id FROM tenant_billing_payments s LEFT JOIN approved_billing_documents d ON d.submission_id=s.id AND d.user_id=s.user_id WHERE s.user_id = ? ORDER BY s.id DESC');
     $sst->execute([(int)$user['id']]);
     $subs = $sst->fetchAll();
 } catch (Throwable $t) {
     $subs = [];
+    $submissionsError = true;
+    error_log('Could not load tenant billing submissions: ' . $t->getMessage());
+    echo '<div class="alert error">Could not load your billing submissions. Please contact the administrator.</div>';
 }
 
 $defaultName = $user['name'] ?? ($tenantProfile['full_name'] ?? '');
@@ -201,9 +213,9 @@ $defaultPrice = $room['monthly_rate'] ?? 0;
   <h3>My Billing Payment Submissions</h3>
   <div style="overflow-x:auto">
   <table class="tbl">
-    <thead><tr><th>Ref</th><th>Unit</th><th>Total</th><th>Type</th><th>Amount Paid</th><th>Date</th><th>Status</th><th>Screenshot</th><th>Action</th></tr></thead>
+    <thead><tr><th>Ref</th><th>Unit</th><th>Total</th><th>Type</th><th>Amount Paid</th><th>Date</th><th>Status</th><th>Documents</th><th>Action</th></tr></thead>
     <tbody>
-    <?php if (!$subs): ?><tr><td colspan="9">No submissions yet.</td></tr><?php endif; ?>
+    <?php if (!$subs && !$submissionsError): ?><tr><td colspan="9">No submissions yet.</td></tr><?php endif; ?>
     <?php foreach ($subs as $s): ?>
       <tr>
         <td>#<?=e((string)$s['id'])?></td>
@@ -214,6 +226,9 @@ $defaultPrice = $room['monthly_rate'] ?? 0;
         <td><?=e($s['date_of_payment'])?></td>
         <td><span class="pill <?=e(str_replace(' ','.', $s['status']))?>"><?=e($s['status'])?></span></td>
         <td>
+          <?php if (!empty($s['document_id'])): ?>
+            <a class="btn ghost sm" href="index.php?page=download&amp;type=approved_invoice&amp;id=<?=(int)$s['document_id']?>" target="_blank">Invoice PDF</a>
+          <?php endif; ?>
           <?php if (!empty($s['screenshot_path'])): ?>
             <a class="btn ghost sm" href="index.php?page=download&type=billing_proof&pid=<?=(int)$s['id']?>" target="_blank">View</a>
           <?php endif; ?>

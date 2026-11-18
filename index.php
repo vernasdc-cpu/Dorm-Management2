@@ -2,6 +2,7 @@
 ob_start();
 require_once __DIR__ . '/config/database.php';
 require_once __DIR__ . '/includes/helpers.php';
+require_once __DIR__ . '/includes/tenant_files.php';
 require_once __DIR__ . '/includes/auth.php';
 require_once __DIR__ . '/includes/layout.php';
 
@@ -98,10 +99,10 @@ if ($page === 'logout') {
 // All other pages require login
 $user = require_login();
 $titles = [
-    'dashboard'=>'Dashboard','rooms'=>'Rooms','allocations'=>'Room Allocation','contracts'=>'Contracts',
-    'contract_monitoring'=>'Contract Monitoring','billing'=>'Billing & Payments','billing_payments'=>'Billing Payments','payment_verification'=>'Payment Verification','billing_corrections'=>'Billing Corrections','violations'=>'Violations','admin_reports'=>'Reports/Maintenance','manage_announcements'=>'Manage Announcements','invoice'=>'Invoice','receipt'=>'Official Receipt',
+    'dashboard'=>'Dashboard','rooms'=>'Rooms','allocations'=>'Room Allocation','contracts'=>'Tenant Files','approve_billing_payment'=>'Approve Billing Payment',
+    'contract_monitoring'=>'Contract Monitoring','billing'=>'Billing & Payments','reference'=>'Reference','billing_payments'=>'Billing Payments','payment_verification'=>'Payment Verification','billing_corrections'=>'Billing Corrections','violations'=>'Violations','admin_reports'=>'Reports/Maintenance','manage_announcements'=>'Manage Announcements','invoice'=>'Invoice','receipt'=>'Official Receipt',
     'inventory'=>'Inventory','repairs'=>'Repair & Maintenance','notifications'=>'Notifications','users'=>'Users & Staff',
-    'tenants'=>'Tenant Profiles',
+    'tenants'=>'Tenant Profiles','tenant_folders'=>'Profile folders','reservations'=>'Reservations','acknowledgment_receipt'=>'Acknowledgment Receipt',
     'tenant_accounts'=>'Tenant Account Users',
     'housekeeping'=>'Housekeeping',
     'reports'=>'Reports','audit-log'=>'Audit Logs','settings'=>'System Settings','profile'=>'My Profile',
@@ -116,6 +117,66 @@ if (!isset($titles[$page])) $page = 'dashboard';
 if ($page === 'download') {
     require_login();
     $type = $_GET['type'] ?? ''; $id = (int)($_GET['id'] ?? 0);
+    if ($type === 'tenant_file') {
+        if (!in_array($user['role'], ['super_admin', 'admin_staff'], true)) { http_response_code(403); die('Forbidden.'); }
+        $st = db()->prepare('SELECT file_name, file_path FROM tenant_file_uploads WHERE id=?');
+        $st->execute([$id]);
+        $document = $st->fetch();
+        if (!$document) { http_response_code(404); die('Document not found.'); }
+        $path = tenant_file_resolve((string)$document['file_path'], '');
+        if (!is_file($path)) { http_response_code(404); die('Document file missing.'); }
+        header('Content-Type: application/octet-stream');
+        header('X-Content-Type-Options: nosniff');
+        header('Content-Disposition: attachment; filename="tenant-document-' . $id . '.' . strtolower(pathinfo($path, PATHINFO_EXTENSION)) . '"');
+        header('Content-Length: ' . filesize($path));
+        readfile($path); exit;
+    }
+    if ($type === 'report_attachment' || $type === 'repair_photo') {
+        $sql = $type === 'report_attachment'
+            ? 'SELECT attachment_path AS file_path, user_id FROM tenant_reports WHERE id=?'
+            : 'SELECT rr.photo_path AS file_path, r.user_id FROM repair_requests rr JOIN residents r ON r.residents_id=rr.resident_id WHERE rr.id=?';
+        $st = db()->prepare($sql);
+        $st->execute([$id]);
+        $document = $st->fetch();
+        if (!$document || empty($document['file_path'])) { http_response_code(404); die('File not found.'); }
+        $roles = $type === 'repair_photo' ? ['super_admin', 'admin_staff', 'housekeeping'] : ['super_admin', 'admin_staff'];
+        if (!in_array($user['role'], $roles, true) && !($user['role'] === 'resident' && (int)$document['user_id'] === (int)$user['id'])) {
+            http_response_code(403); die('Forbidden.');
+        }
+        $legacy = __DIR__ . ($type === 'report_attachment' ? '/uploads/reports' : '/uploads/repairs');
+        $path = tenant_file_resolve((string)$document['file_path'], $legacy);
+        if (!is_file($path)) { http_response_code(404); die('File missing.'); }
+        $ext = strtolower(pathinfo($path, PATHINFO_EXTENSION));
+        $mimes = ['jpg'=>'image/jpeg', 'jpeg'=>'image/jpeg', 'png'=>'image/png', 'webp'=>'image/webp'];
+        header('Content-Type: ' . ($mimes[$ext] ?? 'application/octet-stream'));
+        header('X-Content-Type-Options: nosniff');
+        header('Content-Disposition: inline; filename="attachment-' . $id . '.' . $ext . '"');
+        header('Content-Length: ' . filesize($path));
+        readfile($path); exit;
+    }
+    if (in_array($type, ['approved_invoice', 'approved_proof'], true)) {
+        if (!in_array($user['role'], ['super_admin', 'admin_staff', 'resident'], true)) { http_response_code(403); die('Forbidden.'); }
+        try {
+            $st = db()->prepare('SELECT user_id, invoice_path, proof_path FROM approved_billing_documents WHERE id=?');
+            $st->execute([$id]);
+            $document = $st->fetch();
+            if (!$document) { http_response_code(404); die('Document not found.'); }
+            if ($user['role'] === 'resident' && (int)($document['user_id'] ?? 0) !== (int)$user['id']) { http_response_code(403); die('Forbidden.'); }
+            $file = $type === 'approved_invoice' ? $document['invoice_path'] : $document['proof_path'];
+            $path = tenant_file_resolve((string)$file, __DIR__ . '/uploads/billing');
+            if (!is_file($path)) { http_response_code(404); die('Document file missing.'); }
+            $ext = $type === 'approved_invoice' ? 'pdf' : 'jpg';
+            header('Content-Type: ' . ($ext === 'pdf' ? 'application/pdf' : 'image/jpeg'));
+            header('Content-Disposition: inline; filename="billing-' . $id . '-' . ($ext === 'pdf' ? 'invoice' : 'proof') . '.' . $ext . '"');
+            header('Content-Length: ' . filesize($path));
+            readfile($path);
+            exit;
+        } catch (Throwable $t) {
+            error_log('Could not download approved billing document: ' . $t->getMessage());
+            http_response_code(500);
+            die('Could not load the document.');
+        }
+    }
     if ($type === 'contract') {
         $st = db()->prepare('SELECT cd.*, c.resident_id, c.tenant_profile_id FROM contract_documents cd JOIN contracts c ON c.id=cd.contract_id WHERE cd.id=?');
         $st->execute([$id]); $d = $st->fetch();
@@ -133,7 +194,7 @@ if ($page === 'download') {
             }
             if (!$ok) { http_response_code(403); die('Forbidden.'); }
         }
-        $path = __DIR__ . '/uploads/contracts/' . basename($d['file_path']);
+        $path = tenant_file_resolve((string)$d['file_path'], __DIR__ . '/uploads/contracts');
         if (!is_file($path)) die('File missing on server.');
         header('Content-Type: application/octet-stream');
         header('Content-Disposition: attachment; filename="' . basename($d['file_name']) . '"');
@@ -144,7 +205,7 @@ if ($page === 'download') {
         $st = db()->prepare('SELECT photo_path FROM tenant_profiles WHERE id=?');
         $st->execute([$id]); $photo = $st->fetchColumn();
         if (!$photo) die('Image not found.');
-        $path = __DIR__ . '/uploads/tenants/' . basename((string)$photo);
+        $path = tenant_file_resolve((string)$photo, __DIR__ . '/uploads/tenants');
         if (!is_file($path)) die('Image missing on server.');
         $ext = strtolower(pathinfo($path, PATHINFO_EXTENSION));
         $mimes = ['jpg' => 'image/jpeg', 'jpeg' => 'image/jpeg', 'png' => 'image/png', 'webp' => 'image/webp'];
@@ -165,7 +226,7 @@ if ($page === 'download') {
             http_response_code(403); die('Forbidden.');
         }
         if (!in_array($user['role'] ?? '', ['super_admin','admin_staff','resident'], true)) { http_response_code(403); die('Forbidden.'); }
-        $path = __DIR__ . '/uploads/billing/' . basename((string)$row['screenshot_path']);
+        $path = tenant_file_resolve((string)$row['screenshot_path'], __DIR__ . '/uploads/billing');
         if (!is_file($path)) die('File missing.');
         $ext = strtolower(pathinfo($path, PATHINFO_EXTENSION));
         $mimes = ['jpg'=>'image/jpeg','jpeg'=>'image/jpeg','png'=>'image/png','webp'=>'image/webp'];
@@ -179,11 +240,13 @@ if ($page === 'download') {
 
 $allowed = [
     'rooms'=>['super_admin','admin_staff','housekeeping'],
-    'allocations'=>['super_admin','admin_staff'],
+    'allocations'=>['super_admin','admin_staff','housekeeping'],
     'contracts'=>['super_admin','admin_staff'],
+    'tenant_folders'=>['super_admin','admin_staff'],
     'contract_monitoring'=>['super_admin','admin_staff'],
     'billing'=>['super_admin','admin_staff'],
     'billing_payments'=>['super_admin','admin_staff'],
+    'approve_billing_payment'=>['super_admin','admin_staff'],
     'payment_verification'=>['super_admin','admin_staff'],
     'billing_corrections'=>['super_admin','admin_staff'],
     'violations'=>['super_admin','admin_staff'],
@@ -191,11 +254,14 @@ $allowed = [
     'manage_announcements'=>['super_admin','admin_staff'],
     'invoice'=>['super_admin','admin_staff','resident'],
     'receipt'=>['super_admin','admin_staff','resident'],
+    'acknowledgment_receipt'=>['super_admin','admin_staff','resident'],
     'inventory'=>['super_admin','admin_staff','housekeeping'],
     'repairs'=>['super_admin','admin_staff','housekeeping'],
     'my_room'=>['resident'],'my_contract'=>['resident'],'my_billing'=>['resident'],'my_billing_payment'=>['resident'],'my_billing_correction'=>['resident'],'my_repairs'=>[],
     'my_violations'=>['resident'],'my_reports'=>['resident'],'announcements'=>['resident'],
     'tenants'=>['super_admin','admin_staff'],
+    'reservations'=>['super_admin','admin_staff'],
+    'reference'=>['super_admin','admin_staff'],
     'tenant_accounts'=>['super_admin','admin_staff'],
     'housekeeping'=>['super_admin','admin_staff','housekeeping'],
     'users'=>['super_admin'],

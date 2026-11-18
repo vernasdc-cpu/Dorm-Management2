@@ -14,6 +14,9 @@ until php -r 'require "/var/www/html/config/database.php"; db();' >/dev/null 2>&
 done
 
 # Create schema + demo accounts on a brand-new database only.
+mkdir -p /var/www/html/secret/tenant-files
+chown www-data:www-data /var/www/html/secret/tenant-files
+chmod 770 /var/www/html/secret/tenant-files
 if [ "$i" -lt 999 ]; then
   php /var/www/html/scripts/bootstrap.php || echo "[entrypoint] First-run setup failed (continuing)."
 fi

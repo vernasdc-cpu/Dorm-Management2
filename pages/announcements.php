@@ -20,12 +20,14 @@ try {
         if ($ok) $anns[] = $a;
     }
 } catch (Throwable $t) {
-    $anns = [];
+    error_log('Could not load tenant announcements: ' . $t->getMessage());
+    $announcementsError = 'Could not load announcements. Please contact the administrator.';
 }
 ?>
 <div class="card">
   <h3>Announcements</h3>
-  <?php if (!$anns): ?><p style="color:#7c6f8a">No announcements.</p><?php endif; ?>
+  <?php if (!empty($announcementsError)): ?><div class="alert error"><?=e($announcementsError)?></div>
+  <?php elseif (!$anns): ?><p style="color:#7c6f8a">No announcements.</p><?php endif; ?>
   <?php foreach ($anns as $a): ?>
     <div class="card" style="margin-top:10px">
       <h4 style="margin:0"><?=e($a['title'])?></h4>

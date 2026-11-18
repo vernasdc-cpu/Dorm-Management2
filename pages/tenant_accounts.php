@@ -47,9 +47,10 @@ try {
         LEFT JOIN users u ON u.id = (
             SELECT u2.id
             FROM users u2
-            WHERE u2.tenant_profile_id = tp.id
-               OR (tp.email IS NOT NULL AND LOWER(u2.email) = LOWER(tp.email))
-            ORDER BY (u2.tenant_profile_id = tp.id) DESC, (u2.deleted_at IS NULL) DESC, u2.id DESC
+            WHERE u2.deleted_at IS NULL AND (u2.tenant_profile_id = tp.id
+               OR (tp.email IS NOT NULL AND LOWER(u2.email) = LOWER(tp.email)
+                   AND NOT EXISTS (SELECT 1 FROM users old WHERE old.deleted_at IS NOT NULL AND LOWER(old.email) = LOWER(u2.email))))
+            ORDER BY (u2.tenant_profile_id = tp.id) DESC, u2.id DESC
             LIMIT 1
         )
         ORDER BY tp.full_name, tp.id")->fetchAll();

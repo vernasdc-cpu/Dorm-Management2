@@ -46,3 +46,21 @@ After deployment, confirm that only HTTPS is publicly reachable and direct
 requests to `/.env`, `/config/app.php`, `/scripts/migrate.php`, and
 `/pages/tenants.php` are denied. Keep database and application backups outside
 the public web root.
+
+Uploads are excluded from the Docker build image; the existing `uploads`
+directory is mounted at runtime and must be backed up separately.
+
+The Housekeeping Others checklist uses the current date in Philippine time.
+Each housekeeper can submit one checklist per day; existing historical entries
+are preserved by the migration. Selecting Window, Wall Fan, or Exhaust Fan
+requires the unit cleaned, which is included in the checklist report and CSV
+export. Housekeepers can edit their own saved checklists without changing the
+recorded date.
+Each housekeeper can create one cleaning record per unit per Philippine day.
+Other housekeepers can record the same unit, and historical duplicates remain
+available for review and editing.
+
+Deleted user accounts retain their history but no longer reserve their email.
+Existing non-deleted accounts, including inactive accounts, must still have
+unique emails. When an email is reused for a resident account, link its tenant
+profile deliberately instead of relying on automatic email matching.

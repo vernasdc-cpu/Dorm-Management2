@@ -20,7 +20,8 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                          FROM users u
                          WHERE u.role = 'resident' AND u.deleted_at IS NULL
                            AND (u.tenant_profile_id = tp.id
-                                OR (tp.email IS NOT NULL AND tp.email <> '' AND LOWER(u.email) = LOWER(tp.email)))
+                                OR (tp.email IS NOT NULL AND tp.email <> '' AND LOWER(u.email) = LOWER(tp.email)
+                                    AND NOT EXISTS (SELECT 1 FROM users old WHERE old.deleted_at IS NOT NULL AND LOWER(old.email) = LOWER(u.email))))
                          ORDER BY (u.tenant_profile_id = tp.id) DESC, u.id DESC
                          LIMIT 1) AS user_id
                  FROM tenant_profiles tp
@@ -78,7 +79,8 @@ try {
              FROM users matched
              WHERE matched.role = 'resident' AND matched.deleted_at IS NULL
                AND (matched.tenant_profile_id = tp.id
-                    OR (tp.email IS NOT NULL AND tp.email <> '' AND LOWER(matched.email) = LOWER(tp.email)))
+                    OR (tp.email IS NOT NULL AND tp.email <> '' AND LOWER(matched.email) = LOWER(tp.email)
+                        AND NOT EXISTS (SELECT 1 FROM users old WHERE old.deleted_at IS NOT NULL AND LOWER(old.email) = LOWER(matched.email))))
              ORDER BY (matched.tenant_profile_id = tp.id) DESC, matched.id DESC
              LIMIT 1
          )
@@ -122,7 +124,7 @@ document.getElementById('violationTenant').addEventListener('change', function (
     <tbody>
     <?php if (!$viol): ?><tr><td colspan="9">No violations.</td></tr><?php endif; ?>
     <?php foreach ($viol as $v): ?>
-      <tr>
+      <tr id="violation-<?=(int)$v['id']?>">
         <td><?=e($v['violation_ref'])?></td>
         <td><?=e($v['full_name'] ?: $v['uname'])?></td>
         <td><?=e($v['violation_date'])?></td>

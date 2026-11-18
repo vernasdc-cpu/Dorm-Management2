@@ -55,6 +55,48 @@ try {
 } catch (Throwable $t) {
     echo '<div class="alert error">' . e('Failed to load billing: ' . $t->getMessage()) . '</div>'; return;
 }
+$history = [];
+foreach ($pays as $payment) {
+    $payment['history_type'] = 'bill';
+    $history[] = $payment;
+}
+$historyErrors = [];
+$profileId = (int)($user['tenant_profile_id'] ?? 0);
+if ($profileId > 0) {
+    try {
+        $st = $pdo->prepare('SELECT id, total_amount AS amount, bank_reference AS reference_no, received_at AS payment_date FROM tenant_acknowledgment_receipts WHERE tenant_profile_id=?');
+        $st->execute([$profileId]);
+        foreach ($st->fetchAll() as $payment) {
+            $payment['history_type'] = 'tenant';
+            $history[] = $payment;
+        }
+    } catch (Throwable $t) {
+        error_log('Failed to load resident tenant acknowledgment history: ' . $t->getMessage());
+        $historyErrors[] = 'Could not load your advance and deposit receipts.';
+    }
+    try {
+        $st = $pdo->prepare("SELECT COALESCE(p.id, r.id) AS id,
+            CASE WHEN p.id IS NULL THEN r.amount ELSE r.amount + p.amount END AS amount,
+            COALESCE(p.bank_reference, r.bank_reference) AS reference_no,
+            COALESCE(p.received_at, r.received_at) AS payment_date,
+            p.id AS additional_payment_id, p.is_full_summary
+            FROM reservations r LEFT JOIN reservation_additional_payments p ON p.reservation_id=r.id
+            WHERE r.tenant_profile_id=? AND r.status='Converted'");
+        $st->execute([$profileId]);
+        foreach ($st->fetchAll() as $payment) {
+            $payment['history_type'] = $payment['additional_payment_id'] === null ? 'reservation' : 'reservation_payment';
+            $history[] = $payment;
+        }
+    } catch (Throwable $t) {
+        error_log('Failed to load resident reservation acknowledgment history: ' . $t->getMessage());
+        $historyErrors[] = 'Could not load your reservation receipts.';
+    }
+}
+usort($history, static function (array $a, array $b): int {
+    return strcmp((string)$b['payment_date'], (string)$a['payment_date'])
+        ?: strcmp($a['history_type'], $b['history_type'])
+        ?: ((int)$b['id'] <=> (int)$a['id']);
+});
 $today = date('Y-m-d');
 ?>
 <style>
@@ -100,20 +142,29 @@ $today = date('Y-m-d');
 </div>
 <div class="card">
   <h3>My payment history</h3>
+  <p style="color:#7c6f8a">Includes your bill payments and acknowledgment receipts. Acknowledgment receipts do not pay a bill or reduce its balance.</p>
+  <?php foreach ($historyErrors as $historyError): ?><div class="alert error"><?=e($historyError)?></div><?php endforeach; ?>
   <div class="tbl-wrap">
   <table class="tbl">
     <thead><tr><th>Receipt</th><th>Period</th><th>Amount</th><th>Method</th><th>Date</th><th>Reference</th><th>View</th></tr></thead>
     <tbody>
-    <?php if (!$pays): ?><tr><td colspan="7">No payments yet.</td></tr><?php endif; ?>
-    <?php foreach ($pays as $p): ?>
+    <?php if (!$history && !$historyErrors): ?><tr><td colspan="7">No payments yet.</td></tr><?php endif; ?>
+    <?php foreach ($history as $p):
+        $isBillPayment = $p['history_type'] === 'bill';
+        $receiptNumber = $isBillPayment ? (string)$p['receipt_number'] :
+            ($p['history_type'] === 'tenant' ? 'AR-' : ($p['history_type'] === 'reservation' ? 'AR-R' : 'AR-RP')) . str_pad((string)$p['id'], 6, '0', STR_PAD_LEFT);
+        $receiptUrl = $isBillPayment ? 'index.php?page=receipt&id=' . (int)$p['id'] :
+            'index.php?page=acknowledgment_receipt&type=' . $p['history_type'] . '&id=' . (int)$p['id'];
+        $description = $isBillPayment ? 'Bill payment' : ($p['history_type'] === 'tenant' ? 'Advance and deposit' : ($p['history_type'] === 'reservation' ? 'Reservation' : (!empty($p['is_full_summary']) ? 'Full reservation payment' : 'Reservation total (legacy balance receipt)')));
+    ?>
       <tr>
-        <td><?=e((string)$p['receipt_number'])?></td>
-        <td><?=e($p['billing_period'])?></td>
+        <td><?=e($receiptNumber)?><br><small><?=e($description)?></small></td>
+        <td><?=e($isBillPayment ? $p['billing_period'] : '—')?></td>
         <td><?=money($p['amount'])?></td>
-        <td><?=e((string)$p['payment_method'])?></td>
+        <td><?=e($isBillPayment ? (string)$p['payment_method'] : 'Not specified')?></td>
         <td><?=e(substr((string)$p['payment_date'], 0, 10))?></td>
         <td><?=e((string)$p['reference_no'])?></td>
-        <td><a class="btn ghost sm" href="index.php?page=receipt&id=<?=(int)$p['id']?>">Receipt</a></td>
+        <td><a class="btn ghost sm" href="<?=e($receiptUrl)?>">Receipt</a></td>
       </tr>
     <?php endforeach; ?>
     </tbody>

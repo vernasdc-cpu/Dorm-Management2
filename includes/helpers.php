@@ -108,6 +108,12 @@ function tenant_account_default_password(string $name): string {
     return (preg_replace('/\s+/', '', trim($name)) ?? '') . '@123';
 }
 
+function email_has_deleted_user(PDO $pdo, string $email): bool {
+    $st = $pdo->prepare('SELECT 1 FROM users WHERE LOWER(email)=LOWER(?) AND deleted_at IS NOT NULL LIMIT 1');
+    $st->execute([$email]);
+    return (bool)$st->fetchColumn();
+}
+
 function tenant_provision_account(PDO $pdo, array $profile): array {
     $profileId = (int)($profile['id'] ?? 0);
     $name = trim((string)($profile['full_name'] ?? ''));
@@ -117,22 +123,29 @@ function tenant_provision_account(PDO $pdo, array $profile): array {
     }
 
     $st = $pdo->prepare('SELECT id, email, role, status, deleted_at, tenant_profile_id FROM users
-        WHERE tenant_profile_id=? OR LOWER(email)=LOWER(?)
+        WHERE deleted_at IS NULL AND (tenant_profile_id=? OR LOWER(email)=LOWER(?))
         ORDER BY (tenant_profile_id=?) DESC
         LIMIT 1 FOR UPDATE');
     $st->execute([$profileId, $email, $profileId]);
     $existing = $st->fetch();
     if ($existing) {
-        if ($existing['deleted_at'] !== null) {
-            throw new RuntimeException('This email belongs to a deleted account. Use a different email address or restore the account first.');
-        }
         if ($existing['role'] !== 'resident') {
             throw new RuntimeException('This email is already used by a non-tenant account.');
         }
         if (!empty($existing['tenant_profile_id']) && (int)$existing['tenant_profile_id'] !== $profileId) {
-            throw new RuntimeException('This email is already linked to another tenant profile.');
+            $deletedAccount = $pdo->prepare('SELECT MAX(deleted_at) FROM users WHERE LOWER(email)=LOWER(?) AND deleted_at IS NOT NULL');
+            $deletedAccount->execute([$email]);
+            $deletedAt = $deletedAccount->fetchColumn();
+            $message = 'This email is already linked to another tenant profile.';
+            if ($deletedAt !== null && $deletedAt !== false) {
+                $message .= ' A previous account using this email was deleted on ' . substr((string)$deletedAt, 0, 10) . '.';
+            }
+            throw new RuntimeException($message);
         }
         if (empty($existing['tenant_profile_id'])) {
+            if (email_has_deleted_user($pdo, $email)) {
+                throw new RuntimeException('This email was used by a deleted account. Link the existing account to this tenant profile manually.');
+            }
             $pdo->prepare('UPDATE users SET tenant_profile_id=? WHERE id=?')->execute([$profileId, (int)$existing['id']]);
         }
         $userId = (int)$existing['id'];
@@ -141,15 +154,20 @@ function tenant_provision_account(PDO $pdo, array $profile): array {
         $password = tenant_account_default_password($name);
         $accountStatus = ($profile['profile_status'] ?? 'Active') === 'Active' ? 'active' : 'inactive';
         $ins = $pdo->prepare('INSERT INTO users (name, email, password_hash, role, phone, status, tenant_profile_id) VALUES (?,?,?,?,?,?,?)');
-        $ins->execute([
-            $name,
-            $email,
-            password_hash($password, PASSWORD_DEFAULT),
-            'resident',
-            trim((string)($profile['phone'] ?? '')) ?: null,
-            $accountStatus,
-            $profileId,
-        ]);
+        try {
+            $ins->execute([
+                $name,
+                $email,
+                password_hash($password, PASSWORD_DEFAULT),
+                'resident',
+                trim((string)($profile['phone'] ?? '')) ?: null,
+                $accountStatus,
+                $profileId,
+            ]);
+        } catch (PDOException $e) {
+            if ((int)($e->errorInfo[1] ?? 0) === 1062) throw new RuntimeException('Email already exists.', 0, $e);
+            throw $e;
+        }
         $userId = (int)$pdo->lastInsertId();
     }
 
@@ -203,6 +221,64 @@ function tenant_send_account_email(array $profile, ?string $password, ?string &$
 
 function money(float|int|string $n): string { return '₱' . number_format((float)$n, 2); }
 
+function tenant_floor_from_unit(string $unit): string {
+    $c = strtoupper(substr(trim($unit), 0, 1));
+    if ($c === 'G') return 'G';
+    return ['2' => '2nd', '3' => '3rd', '4' => '4th', '5' => '5th', '6' => '6th'][$c] ?? '';
+}
+
+function acknowledgment_number_words(int $number): string {
+    $ones = ['zero','one','two','three','four','five','six','seven','eight','nine','ten','eleven','twelve','thirteen','fourteen','fifteen','sixteen','seventeen','eighteen','nineteen'];
+    $tens = ['', '', 'twenty','thirty','forty','fifty','sixty','seventy','eighty','ninety'];
+    if ($number < 20) return $ones[$number];
+    if ($number < 100) return $tens[intdiv($number, 10)] . ($number % 10 ? '-' . $ones[$number % 10] : '');
+    if ($number < 1000) return $ones[intdiv($number, 100)] . ' hundred' . ($number % 100 ? ' ' . acknowledgment_number_words($number % 100) : '');
+    foreach ([1000000 => 'million', 1000 => 'thousand'] as $scale => $label) {
+        if ($number >= $scale) return acknowledgment_number_words(intdiv($number, $scale)) . ' ' . $label . ($number % $scale ? ' ' . acknowledgment_number_words($number % $scale) : '');
+    }
+    throw new RuntimeException('Receipt amount cannot be expressed in words.');
+}
+
+function reservation_full_receipt_data(array $reservation, array $payment): array {
+    $receipt = array_merge($reservation, $payment, ['payment_classification' => 'Full']);
+    if ((int)$payment['is_full_summary'] === 1) {
+        $toCents = static function (string $amount): int {
+            [$pesos, $centavos] = explode('.', $amount);
+            return (int)$pesos * 100 + (int)$centavos;
+        };
+        $total = $toCents((string)$reservation['amount']) + $toCents((string)$payment['amount']);
+        $receipt['amount'] = intdiv($total, 100) . '.' . str_pad((string)($total % 100), 2, '0', STR_PAD_LEFT);
+        $receipt['partial_receipt_id'] = $reservation['id'];
+        $receipt['partial_amount'] = $reservation['amount'];
+        $receipt['partial_received_at'] = $reservation['received_at'];
+        $receipt['balance_amount'] = $payment['amount'];
+    }
+    return $receipt;
+}
+
+function reservation_send_receipt_email(array $reservation, bool $additional = false, ?string &$error = null): bool {
+    $number = ($additional ? 'AR-RP' : 'AR-R') . str_pad((string)$reservation['id'], 6, '0', STR_PAD_LEFT);
+    [$pesos, $centavos] = array_map('intval', explode('.', (string)$reservation['amount']));
+    $words = ucfirst(acknowledgment_number_words($pesos)) . ' pesos and ' . str_pad((string)$centavos, 2, '0', STR_PAD_LEFT) . '/100';
+    $classification = $reservation['payment_classification'] === 'Full' ? 'Full' : 'Partial';
+    $body = "SEGOVIA DEVELOPMENT CORP.\r\n7461 Heart Bldg., Brgy. San Antonio, Makati City\r\n\r\nACKNOWLEDGEMENT RECEIPT\r\n";
+    $body .= "No. {$number}\r\nDate: " . substr((string)$reservation['received_at'], 0, 10) . "\r\n";
+    $body .= "Received from: {$reservation['full_name']}\r\nAddress at: {$reservation['address']}\r\n";
+    $body .= "The sum of: {$words}\r\nAmount in figures: " . money($reservation['amount']) . "\r\n";
+    $body .= ($additional && !empty($reservation['is_full_summary']) ? 'Balance Bank Ref No.: ' : 'Bank Ref No.: ') . $reservation['bank_reference'] . "\r\n";
+    if ($additional && !empty($reservation['is_full_summary'])) {
+        $partialNumber = 'AR-R' . str_pad((string)$reservation['partial_receipt_id'], 6, '0', STR_PAD_LEFT);
+        $body .= "Full payment for reservation, Unit {$reservation['unit_number']}\r\n";
+        $body .= "Partial receipt: {$partialNumber}, " . money($reservation['partial_amount']) . ', ' . substr((string)$reservation['partial_received_at'], 0, 10) . "\r\n";
+        $body .= "Balance payment: " . money($reservation['balance_amount']) . "\r\n";
+    } else {
+        $body .= ($additional ? 'Additional payment completing the reservation' : "{$classification} payment for reservation") . ", Unit {$reservation['unit_number']}\r\n";
+    }
+    $body .= "Received by: {$reservation['received_by_name']}\r\n";
+    if ($reservation['status'] === 'Cancelled') $body .= "\r\nThis reservation has been cancelled. This receipt records the original payment; no refund is recorded here.\r\n";
+    return send_app_mail((string)$reservation['email'], 'Reservation acknowledgment receipt ' . $number, $body, $error);
+}
+
 // Tenant context helpers
 function get_tenant_context(array $user): ?array {
     $pdo = db();
@@ -224,7 +300,7 @@ function get_tenant_context(array $user): ?array {
             $st2 = $pdo->prepare('SELECT * FROM tenant_profiles WHERE id = ? LIMIT 1');
             $st2->execute([(int)$tpId]);
             $ctx['tenant_profile'] = $st2->fetch() ?: null;
-        } elseif (!empty($user['email'])) {
+        } elseif (!empty($user['email']) && !email_has_deleted_user($pdo, (string)$user['email'])) {
             $st2 = $pdo->prepare('SELECT * FROM tenant_profiles WHERE LOWER(email)=LOWER(?) LIMIT 2');
             $st2->execute([$user['email']]);
             $matches = $st2->fetchAll();

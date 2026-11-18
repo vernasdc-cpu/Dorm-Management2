@@ -67,7 +67,9 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                     'SELECT r.residents_id, u.id AS user_id
                      FROM users u
                      LEFT JOIN residents r ON r.user_id = u.id
-                     WHERE u.tenant_profile_id = ? OR (u.email IS NOT NULL AND u.email <> \'\' AND LOWER(u.email) = LOWER(?)) OR LOWER(u.name) = LOWER(?)
+                     WHERE u.deleted_at IS NULL AND (u.tenant_profile_id = ? OR
+                       ((u.email IS NOT NULL AND u.email <> \'\' AND LOWER(u.email) = LOWER(?) OR LOWER(u.name) = LOWER(?))
+                        AND NOT EXISTS (SELECT 1 FROM users old WHERE old.deleted_at IS NOT NULL AND LOWER(old.email) = LOWER(u.email))))
                      ORDER BY r.residents_id DESC LIMIT 1'
                 );
                 $uSt->execute([$tenantProfileId, $tp['email'] ?? '', $tp['full_name']]);
@@ -79,6 +81,9 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                 } else {
                     $userId = $existingUser ? (int)$existingUser['user_id'] : 0;
                     if ($userId <= 0) {
+                        if (!empty($tp['email']) && email_has_deleted_user($pdo, (string)$tp['email'])) {
+                            throw new RuntimeException('This email was used by a deleted account. Create or link the tenant account manually before billing.');
+                        }
                         $genEmail = !empty($tp['email']) ? $tp['email'] : ('tenant_' . $tp['id'] . '@heartdorm.local');
                         $pwdHash = password_hash('Resident@123', PASSWORD_BCRYPT);
                         $insU = db()->prepare(
@@ -506,6 +511,7 @@ if (($_GET['export'] ?? '') === 'csv') {
 
 // ---------- recent payments ----------
 $payments = [];
+$paymentHistoryErrors = [];
 try {
     $payments = db()->query(
         "SELECT p.*,
@@ -519,9 +525,55 @@ try {
          LEFT JOIN rooms rm ON rm.id = b.room_id
          LEFT JOIN tenant_applications ta ON ta.id = b.application_id
          LEFT JOIN users rv ON rv.id = p.received_by
-         ORDER BY p.id DESC LIMIT 50"
+         ORDER BY p.payment_date DESC, p.id DESC LIMIT 50"
     )->fetchAll();
-} catch (Throwable $t) {}
+    foreach ($payments as &$payment) $payment['history_type'] = 'bill';
+    unset($payment);
+} catch (Throwable $t) {
+    error_log('Failed to load bill payment history: ' . $t->getMessage());
+    $paymentHistoryErrors[] = 'Could not load bill payments.';
+}
+try {
+    $acknowledgments = db()->query(
+        "SELECT id, tenant_name AS resident_name, unit_number AS room_number,
+                total_amount AS amount, bank_reference AS reference_no, received_at AS payment_date,
+                received_by_name
+         FROM tenant_acknowledgment_receipts ORDER BY received_at DESC, id DESC LIMIT 50"
+    )->fetchAll();
+    foreach ($acknowledgments as $payment) {
+        $payment['history_type'] = 'tenant';
+        $payments[] = $payment;
+    }
+} catch (Throwable $t) {
+    error_log('Failed to load tenant acknowledgment history: ' . $t->getMessage());
+    $paymentHistoryErrors[] = 'Could not load tenant acknowledgment receipts.';
+}
+try {
+    $reservationPayments = db()->query(
+        "SELECT r.id AS reservation_id, COALESCE(p.id, r.id) AS id,
+                r.full_name AS resident_name, r.unit_number AS room_number,
+                CASE WHEN p.id IS NULL THEN r.amount ELSE r.amount + p.amount END AS amount,
+                COALESCE(p.bank_reference, r.bank_reference) AS reference_no,
+                COALESCE(p.received_at, r.received_at) AS payment_date,
+                COALESCE(p.received_by_name, r.received_by_name) AS received_by_name,
+                r.status, p.is_full_summary, p.id AS additional_payment_id
+         FROM reservations r LEFT JOIN reservation_additional_payments p ON p.reservation_id=r.id
+         ORDER BY COALESCE(p.received_at, r.received_at) DESC, r.id DESC LIMIT 50"
+    )->fetchAll();
+    foreach ($reservationPayments as $payment) {
+        $payment['history_type'] = $payment['additional_payment_id'] === null ? 'reservation' : 'reservation_payment';
+        $payments[] = $payment;
+    }
+} catch (Throwable $t) {
+    error_log('Failed to load reservation acknowledgment history: ' . $t->getMessage());
+    $paymentHistoryErrors[] = 'Could not load reservation acknowledgment receipts.';
+}
+usort($payments, static function (array $a, array $b): int {
+    return strcmp((string)$b['payment_date'], (string)$a['payment_date'])
+        ?: strcmp($a['history_type'], $b['history_type'])
+        ?: ((int)$b['id'] <=> (int)$a['id']);
+});
+$payments = array_slice($payments, 0, 50);
 
 $approvedSubmissions = [];
 $approvedSubmissionsError = null;
@@ -590,6 +642,7 @@ $expQuery = http_build_query(array_filter(['page' => 'billing', 'export' => 'csv
     <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
       <h3 style="margin:0">Bills</h3>
       <button type="button" class="btn sm" onclick="openModal('mCreateBill')">+ Create New Bill</button>
+      <a class="btn ghost sm" href="index.php?page=reference">Reference number</a>
     </div>
     <form method="get" action="index.php" style="display:flex;gap:8px;flex-wrap:wrap;align-items:end">
       <input type="hidden" name="page" value="billing">
@@ -874,23 +927,32 @@ $expQuery = http_build_query(array_filter(['page' => 'billing', 'export' => 'csv
 
 <div class="card">
   <h3>Payments history (recent 50)</h3>
+  <p style="color:#7c6f8a">Includes bill payments and saved acknowledgment receipts. Acknowledgment receipts are not applied to bills or included in the collected-this-month bill total.</p>
+  <?php foreach ($paymentHistoryErrors as $historyError): ?><div class="alert error"><?=e($historyError)?></div><?php endforeach; ?>
   <div class="tbl-wrap">
   <table class="tbl">
     <thead><tr><th>Receipt</th><th>Resident</th><th>Room</th><th>Period</th><th>Amount</th><th>Method</th><th>Date</th><th>Reference</th><th>Received by</th><th class="no-print">Receipt</th></tr></thead>
     <tbody>
-    <?php if (!$payments): ?><tr><td colspan="10">No payments yet.</td></tr><?php endif; ?>
+    <?php if (!$payments && !$paymentHistoryErrors): ?><tr><td colspan="10">No payments yet.</td></tr><?php endif; ?>
     <?php foreach ($payments as $p): ?>
+      <?php
+        $isBillPayment = $p['history_type'] === 'bill';
+        $receiptNumber = $isBillPayment ? (string)$p['receipt_number'] :
+            ($p['history_type'] === 'tenant' ? 'AR-' : ($p['history_type'] === 'reservation' ? 'AR-R' : 'AR-RP')) . str_pad((string)$p['id'], 6, '0', STR_PAD_LEFT);
+        $receiptUrl = $isBillPayment ? 'index.php?page=receipt&id=' . (int)$p['id'] :
+            'index.php?page=acknowledgment_receipt&type=' . $p['history_type'] . '&id=' . (int)$p['id'];
+      ?>
       <tr>
-        <td><?=e((string)$p['receipt_number'])?></td>
+        <td><?=e($receiptNumber)?><br><small><?= $isBillPayment ? 'Bill payment' : ($p['history_type'] === 'tenant' ? 'Advance and deposit' : ($p['history_type'] === 'reservation' ? 'Reservation' . ($p['status'] === 'Cancelled' ? ' (cancelled; no refund recorded)' : '') : (!empty($p['is_full_summary']) ? 'Full reservation payment' : 'Reservation total (legacy balance receipt)'))) ?></small></td>
         <td><?=e($p['resident_name'])?></td>
         <td><?=e($p['room_number'])?></td>
-        <td><?=e($p['billing_period'])?></td>
+        <td><?=e($isBillPayment ? $p['billing_period'] : '—')?></td>
         <td><?=money($p['amount'])?></td>
-        <td><?=e((string)$p['payment_method'])?></td>
+        <td><?=e($isBillPayment ? (string)$p['payment_method'] : 'Not specified')?></td>
         <td><?=e(substr((string)$p['payment_date'], 0, 10))?></td>
         <td><?=e((string)$p['reference_no'])?></td>
         <td><?=e((string)($p['received_by_name'] ?? ''))?></td>
-        <td class="no-print"><a class="btn ghost sm" href="index.php?page=receipt&id=<?=(int)$p['id']?>">View</a></td>
+        <td class="no-print"><a class="btn ghost sm" href="<?=e($receiptUrl)?>">View</a></td>
       </tr>
     <?php endforeach; ?>
     </tbody>
@@ -903,7 +965,7 @@ $expQuery = http_build_query(array_filter(['page' => 'billing', 'export' => 'csv
     <h3 style="margin:0">Approved Billing Payment Submissions</h3>
     <a class="btn ghost sm" href="index.php?page=billing_payments">Manage submissions</a>
   </div>
-  <p style="color:#7c6f8a">Tenant payment proofs approved by an administrator. These are submissions, not receipts recorded against a bill.</p>
+  <p style="color:#7c6f8a">Tenant payment proofs approved by an administrator. New approvals are recorded against a bill; older approvals may not have a linked payment.</p>
   <?php if ($approvedSubmissionsError): ?>
     <div class="alert error"><?=e($approvedSubmissionsError)?></div>
   <?php else: ?>

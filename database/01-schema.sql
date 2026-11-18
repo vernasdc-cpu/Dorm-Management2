@@ -11,7 +11,7 @@ CREATE TABLE IF NOT EXISTS roles (
 CREATE TABLE IF NOT EXISTS users (
   id INT AUTO_INCREMENT PRIMARY KEY,
   name VARCHAR(120) NOT NULL,
-  email VARCHAR(160) UNIQUE NOT NULL,
+  email VARCHAR(160) NOT NULL,
   password_hash VARCHAR(255) NOT NULL,
   role ENUM('super_admin','admin_staff','housekeeping','resident') NOT NULL DEFAULT 'resident',
   phone VARCHAR(40) NULL,
@@ -19,6 +19,8 @@ CREATE TABLE IF NOT EXISTS users (
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   deleted_at TIMESTAMP NULL DEFAULT NULL,
+  current_email VARCHAR(160) GENERATED ALWAYS AS (CASE WHEN deleted_at IS NULL THEN LOWER(email) ELSE NULL END) STORED,
+  UNIQUE KEY uq_users_current_email (current_email),
   INDEX idx_role (role), INDEX idx_status (status)
 );
 
@@ -349,6 +351,14 @@ CREATE TABLE IF NOT EXISTS housekeeping_other_records (
 CREATE TABLE IF NOT EXISTS housekeeping_other_items (
   record_id INT NOT NULL,
   item_key VARCHAR(40) NOT NULL,
+  unit_details VARCHAR(255) NULL,
   PRIMARY KEY (record_id, item_key),
   CONSTRAINT fk_hk_other_item_record FOREIGN KEY (record_id) REFERENCES housekeeping_other_records(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS housekeeping_other_daily_entries (
+  staff_id INT NOT NULL,
+  checklist_date DATE NOT NULL,
+  PRIMARY KEY (staff_id, checklist_date),
+  CONSTRAINT fk_hk_other_daily_staff FOREIGN KEY (staff_id) REFERENCES users(id) ON DELETE CASCADE
 );

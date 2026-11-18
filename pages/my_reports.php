@@ -19,16 +19,23 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
         if (!empty($_FILES['attachment']) && (($_FILES['attachment']['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_NO_FILE)) {
             $err = validate_upload($_FILES['attachment'], ['jpg','jpeg','png','webp'], 3);
             if ($err) throw new RuntimeException($err);
-            $attachment = safe_store_upload($_FILES['attachment'], __DIR__ . '/../uploads/reports');
+            $attachment = !empty($ctx['tenant_profile']['id'])
+                ? tenant_file_store_upload($pdo, (int)$ctx['tenant_profile']['id'], 'Other_Documents', $_FILES['attachment'])
+                : safe_store_upload($_FILES['attachment'], __DIR__ . '/../uploads/reports');
         }
         $ins = $pdo->prepare('INSERT INTO tenant_reports (report_ref, user_id, tenant_profile_id, resident_id, room_id, category, subject, description, attachment_path) VALUES (?,?,?,?,?,?,?,?,?)');
-        $ins->execute([
-            $ref, (int)$user['id'],
-            $ctx['tenant_profile'] ? (int)$ctx['tenant_profile']['id'] : null,
-            $ctx['resident'] ? (int)$ctx['resident']['residents_id'] : null,
-            $ctx['resident']['room_id'] ?? ($ctx['tenant_profile']['room_id'] ?? null),
-            $category, $subject, $description, $attachment
-        ]);
+        try {
+            $ins->execute([
+                $ref, (int)$user['id'],
+                $ctx['tenant_profile'] ? (int)$ctx['tenant_profile']['id'] : null,
+                $ctx['resident'] ? (int)$ctx['resident']['residents_id'] : null,
+                $ctx['resident']['room_id'] ?? ($ctx['tenant_profile']['room_id'] ?? null),
+                $category, $subject, $description, $attachment
+            ]);
+        } catch (Throwable $t) {
+            if ($attachment !== null) tenant_file_remove($attachment, __DIR__ . '/../uploads/reports');
+            throw $t;
+        }
         audit_log((int)$user['id'], 'Submitted report ' . $ref, 'reports', (string)$pdo->lastInsertId());
         flash('success', 'Report submitted.');
         redirect('index.php?page=my_reports');
@@ -80,7 +87,7 @@ try {
         <td><?=e($r['subject'])?></td>
         <td><?=e($r['status'])?></td>
         <td><?= !empty($r['staff_response']) ? nl2br(e($r['staff_response'])) : '—' ?></td>
-        <td><?php if(!empty($r['attachment_path'])): ?><a class="btn ghost sm" href="uploads/reports/<?=e(basename($r['attachment_path']))?>" target="_blank">View</a><?php endif; ?></td>
+        <td><?php if(!empty($r['attachment_path'])): ?><a class="btn ghost sm" href="index.php?page=download&amp;type=report_attachment&amp;id=<?=(int)$r['id']?>" target="_blank">View</a><?php endif; ?></td>
       </tr>
     <?php endforeach; ?>
     </tbody>

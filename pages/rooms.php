@@ -28,6 +28,7 @@ function room_delete_blockers(PDO $pdo, int $roomId): array {
         'room_allocations' => 'allocation record',
         'repair_requests' => 'repair request',
         'tenant_profiles' => 'tenant profile',
+        'reservations' => 'reservation',
     ];
     $blockers = [];
     foreach ($checks as $table => $label) {
@@ -228,11 +229,11 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             if ($max < 1 || $max > 12) throw new RuntimeException('Capacity must be between 1 and 12.');
             if ($rate < 0) throw new RuntimeException('Monthly rate cannot be negative.');
             $labels = room_normalize_bed_labels($_POST['bed_numbers'] ?? [], $max);
-            $occ = $pdo->prepare("SELECT COUNT(*) FROM beds WHERE room_id=? AND status='occupied'");
+            $occ = $pdo->prepare("SELECT COUNT(*) FROM beds WHERE room_id=? AND status IN ('occupied','reserved')");
             $occ->execute([$roomId]);
             $occupied = (int)$occ->fetchColumn();
             if ($max < $occupied) {
-                throw new RuntimeException('Room capacity cannot go below the ' . $occupied . ' occupied bed(s).');
+                throw new RuntimeException('Room capacity cannot go below the ' . $occupied . ' occupied or reserved bed(s).');
             }
             $dup = $pdo->prepare('SELECT id FROM rooms WHERE room_number=? AND id<>?');
             $dup->execute([$roomNo, $roomId]);
@@ -403,12 +404,14 @@ try {
     $sql = "SELECT r.*, f.name AS floor_name, t.name AS type_name,
               un.unit_number AS linked_unit_number,
               (SELECT COUNT(*) FROM beds b WHERE b.room_id=r.id AND b.status='occupied') AS occupied,
+              (SELECT COUNT(*) FROM beds b WHERE b.room_id=r.id AND b.status='reserved') AS reserved_beds,
               (
                 EXISTS(SELECT 1 FROM bills b WHERE b.room_id=r.id)
                 OR EXISTS(SELECT 1 FROM contracts c WHERE c.room_id=r.id)
                 OR EXISTS(SELECT 1 FROM room_allocations ra WHERE ra.room_id=r.id)
                 OR EXISTS(SELECT 1 FROM repair_requests rr WHERE rr.room_id=r.id)
                 OR EXISTS(SELECT 1 FROM tenant_profiles tp WHERE tp.room_id=r.id)
+                OR EXISTS(SELECT 1 FROM reservations rv WHERE rv.room_id=r.id)
               ) AS has_history
             FROM rooms r
             JOIN floors f ON f.id=r.floor_id
@@ -541,7 +544,7 @@ try {
   </div>
   <?php endif;
     $occ = (int)$r['occupied']; $max = max(1, (int)$r['max_occupants']);
-    $avail = max(0, $max - $occ);
+    $avail = max(0, $max - $occ - (int)$r['reserved_beds']);
     $pct = (int)round($occ / $max * 100);
     $blocked = in_array($r['status'], ['Reserved', 'Under Maintenance', 'Unavailable'], true);
     $hasVacancy = $avail > 0 && !$blocked;
@@ -605,7 +608,7 @@ try {
             <button class="btn danger sm">Delete</button>
           </form>
         <?php else: ?>
-          <span class="pill info" title="<?= $hasHistory ? 'This room has bills, contracts, tenant profiles, allocations or repairs and cannot be deleted.' : 'This room has active occupants and cannot be deleted.' ?>">Archive only</span>
+          <span class="pill info" title="<?= $hasHistory ? 'This room has bills, contracts, tenant profiles, reservations, allocations or repairs and cannot be deleted.' : 'This room has active occupants and cannot be deleted.' ?>">Archive only</span>
         <?php endif; ?>
       <?php endif; ?>
     </div>

@@ -15,3 +15,4 @@ uploads/mail.log
 
 # Local-only private reference files; never commit or deploy their contents
 /secret/
+/vendor/

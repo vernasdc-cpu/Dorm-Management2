@@ -44,14 +44,22 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
         if (!empty($_FILES['photo']) && (($_FILES['photo']['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_NO_FILE)) {
             $err = validate_upload($_FILES['photo'], ['jpg', 'jpeg', 'png', 'webp'], 5);
             if ($err) throw new RuntimeException($err);
-            $photoName = safe_store_upload($_FILES['photo'], __DIR__ . '/../uploads/repairs');
+            $profileId = (int)($user['tenant_profile_id'] ?? 0);
+            $photoName = $profileId
+                ? tenant_file_store_upload(db(), $profileId, 'Other_Documents', $_FILES['photo'])
+                : safe_store_upload($_FILES['photo'], __DIR__ . '/../uploads/repairs');
         }
 
         $next = (int)db()->query('SELECT COALESCE(MAX(id),0)+1 FROM repair_requests')->fetchColumn();
         $reportId = 'REP-' . str_pad((string)$next, 4, '0', STR_PAD_LEFT);
 
         $ins = db()->prepare('INSERT INTO repair_requests (report_id, resident_id, room_id, category, description, priority, photo_path, status) VALUES (?,?,?,?,?,?,?,?)');
-        $ins->execute([$reportId, (int)$me['residents_id'], (int)$me['room_id'], $category, $description, $priority, $photoName, 'Reported']);
+        try {
+            $ins->execute([$reportId, (int)$me['residents_id'], (int)$me['room_id'], $category, $description, $priority, $photoName, 'Reported']);
+        } catch (Throwable $t) {
+            if ($photoName !== null) tenant_file_remove($photoName, __DIR__ . '/../uploads/repairs');
+            throw $t;
+        }
         $repairId = (int)db()->lastInsertId();
         db()->prepare('INSERT INTO repair_updates (repair_id, updated_by, old_status, new_status, notes) VALUES (?,?,?,?,?)')
             ->execute([$repairId, (int)$user['id'], null, 'Reported', 'Request submitted by resident.']);
@@ -121,7 +129,7 @@ if ($rows) {
        <span class="pill <?= myrep_status_class($r['status']) ?>"><?= e($r['status']) ?></span></p>
     <p><?= nl2br(e($r['description'])) ?></p>
     <?php if (!empty($r['photo_path'])): ?>
-      <p><img src="uploads/repairs/<?= e(basename($r['photo_path'])) ?>" alt="Repair photo" style="max-width:100%;border-radius:10px;border:1px solid #efdff5"></p>
+      <p><img src="index.php?page=download&amp;type=repair_photo&amp;id=<?=(int)$r['id']?>" alt="Repair photo" style="max-width:100%;border-radius:10px;border:1px solid #efdff5"></p>
     <?php endif; ?>
     <?php if (!empty($r['resolution_notes'])): ?><p><strong>Resolution:</strong> <?= nl2br(e($r['resolution_notes'])) ?></p><?php endif; ?>
     <h4>Status timeline</h4>

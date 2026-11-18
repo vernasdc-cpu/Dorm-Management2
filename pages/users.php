@@ -26,11 +26,17 @@ try {
       $chk = $pdo->prepare('SELECT id FROM users WHERE LOWER(email)=LOWER(?) AND deleted_at IS NULL');
       $chk->execute([$email]);
       if ($chk->fetch()) throw new RuntimeException('Email already exists.');
+      $reusedEmail = email_has_deleted_user($pdo, $email);
       $st = $pdo->prepare('INSERT INTO users (name,email,password_hash,role,phone,status) VALUES (?,?,?,?,?,\'active\')');
-      $st->execute([$name, $email, password_hash($pw, PASSWORD_DEFAULT), $role, $phone ?: null]);
+      try {
+        $st->execute([$name, $email, password_hash($pw, PASSWORD_DEFAULT), $role, $phone ?: null]);
+      } catch (PDOException $e) {
+        if ((int)($e->errorInfo[1] ?? 0) === 1062) throw new RuntimeException('Email already exists.', 0, $e);
+        throw $e;
+      }
       $uid = (int)$pdo->lastInsertId();
       // Try to link to tenant profile if resident
-      if ($role === 'resident') {
+      if ($role === 'resident' && !$reusedEmail) {
         $tp = $pdo->prepare('SELECT id FROM tenant_profiles WHERE LOWER(email)=LOWER(?) LIMIT 1');
         $tp->execute([$email]);
         $tpid = $tp->fetchColumn();
@@ -45,7 +51,9 @@ try {
         }
       }
       audit_log((int)$user['id'], "Created user {$email} role {$role}", 'users', (string)$uid);
-      flash('success', 'User created.');
+      flash('success', $role === 'resident' && $reusedEmail
+        ? 'User created. Link the tenant profile manually because this email was used by a deleted account.'
+        : 'User created.');
       redirect('index.php?page=users');
     }
 
